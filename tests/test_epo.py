@@ -1,16 +1,18 @@
 import unittest
+from typing import ClassVar
 
 import numpy as np
 import torch
 from torch import nn
 
-from prompt_suppression.epo import (
+from llm_controllability.models.adapters import ensure_padding_token
+from llm_controllability.optimization.epo import (
     History,
     build_pareto_frontier,
     combine_score,
     epo,
-    ensure_padding_token,
 )
+from llm_controllability.optimization.runners import residual_runner
 
 
 class DummyPadTokenizer:
@@ -25,6 +27,7 @@ class DummyTokenizer:
 
 class TinyTokenizer:
     vocab_size = 8
+    all_special_ids: ClassVar[list[int]] = [0, 7]
 
     def decode(self, ids, skip_special_tokens=False):
         return " ".join(str(int(i)) for i in ids)
@@ -100,6 +103,43 @@ class EpoObjectiveTests(unittest.TestCase):
         )
 
         self.assertEqual(history.ids.shape[0], 2)
+        self.assertFalse(np.isin(history.ids, TinyTokenizer.all_special_ids).any())
+
+    def test_residual_runner_projects_the_post_block_state(self):
+        class AddOne(nn.Module):
+            def forward(self, hidden):
+                return hidden + 1.0
+
+        class ResidualModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.embed = nn.Embedding(4, 2)
+                nn.init.zeros_(self.embed.weight)
+                self.model = nn.Module()
+                self.model.layers = nn.ModuleList([AddOne()])
+
+            def get_input_embeddings(self):
+                return self.embed
+
+            def forward(self, input_ids=None, inputs_embeds=None):
+                hidden = (
+                    self.embed(input_ids)
+                    if input_ids is not None
+                    else inputs_embeds
+                )
+                hidden = self.model.layers[0](hidden)
+                return type("Output", (), {"logits": hidden})
+
+        model = ResidualModel()
+        runner = residual_runner(
+            model,
+            TinyTokenizer(),
+            layer=0,
+            vector=torch.tensor([1.0, 0.0]),
+        )
+        result = runner(input_ids=torch.tensor([[1, 2]]))
+
+        self.assertTrue(torch.allclose(result["target"], torch.tensor([1.0])))
 
 
 if __name__ == "__main__":

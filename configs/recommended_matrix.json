@@ -1,0 +1,102 @@
+{
+  "defaults": {
+    "dtype": "bfloat16",
+    "attn_implementation": "eager"
+  },
+  "models": [
+    {
+      "slug": "gemma3_4b_it",
+      "model_name": "google/gemma-3-4b-it",
+      "protocol": "full",
+      "family": "gemma3",
+      "scale_group": "small",
+      "analyses": ["controllability", "token_monitors", "gemma_scope"]
+    },
+    {
+      "slug": "gemma3_12b_it",
+      "model_name": "google/gemma-3-12b-it",
+      "protocol": "full",
+      "family": "gemma3",
+      "scale_group": "mid",
+      "analyses": ["controllability", "token_monitors", "gemma_scope"]
+    },
+    {
+      "slug": "gemma4_12b_it",
+      "model_name": "google/gemma-4-12B-it",
+      "protocol": "full",
+      "family": "gemma4",
+      "scale_group": "mid",
+      "analyses": ["controllability", "token_monitors"]
+    },
+    {
+      "slug": "phi4_mini_instruct",
+      "model_name": "microsoft/Phi-4-mini-instruct",
+      "protocol": "full",
+      "family": "phi4",
+      "scale_group": "small",
+      "analyses": ["controllability", "token_monitors"]
+    },
+    {
+      "slug": "phi4",
+      "model_name": "microsoft/phi-4",
+      "protocol": "full",
+      "family": "phi4",
+      "scale_group": "mid",
+      "analyses": ["controllability", "token_monitors"]
+    },
+    {
+      "slug": "gemma3_4b_pt",
+      "model_name": "google/gemma-3-4b-pt",
+      "protocol": "matched",
+      "family": "gemma3",
+      "scale_group": "small",
+      "analyses": ["controllability", "gemma_scope"]
+    },
+    {
+      "slug": "gemma3_12b_pt",
+      "model_name": "google/gemma-3-12b-pt",
+      "protocol": "matched",
+      "family": "gemma3",
+      "scale_group": "mid",
+      "analyses": ["controllability", "gemma_scope"]
+    },
+    {
+      "slug": "gemma4_12b_pt",
+      "model_name": "google/gemma-4-12B",
+      "protocol": "matched",
+      "family": "gemma4",
+      "scale_group": "mid",
+      "analyses": ["controllability"]
+    },
+    {
+      "slug": "phi4_reasoning",
+      "model_name": "microsoft/Phi-4-reasoning",
+      "protocol": "matched",
+      "family": "phi4",
+      "scale_group": "mid",
+      "analyses": ["controllability"]
+    }
+  ],
+  "matched_comparisons": [
+    {
+      "name": "gemma3_4b_instruction_tuning",
+      "reference": "gemma3_4b_pt",
+      "comparison": "gemma3_4b_it"
+    },
+    {
+      "name": "gemma3_12b_instruction_tuning",
+      "reference": "gemma3_12b_pt",
+      "comparison": "gemma3_12b_it"
+    },
+    {
+      "name": "gemma4_12b_instruction_tuning",
+      "reference": "gemma4_12b_pt",
+      "comparison": "gemma4_12b_it"
+    },
+    {
+      "name": "phi4_reasoning_post_training",
+      "reference": "phi4",
+      "comparison": "phi4_reasoning"
+    }
+  ]
+}

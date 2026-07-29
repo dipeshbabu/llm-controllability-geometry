@@ -1,202 +1,179 @@
-# Prompt Suppression Geometry
+# LLM Controllability Geometry
 
-Utilities for gradient-guided prompt optimization against language-model
-targets. This repository contains an EPO-style optimizer, target runners for
-logits, neurons, residual directions, and attention entries, plus small helpers
-for attribution and remote experiment execution.
+This repository studies which internal states a language model can reach while
+its verified behavior remains fixed. Prompt optimization is one control
+channel. Direct residual interventions, feedback control, and prompt plus
+activation control provide the others.
 
-## Repository Contents
+The central measurements are:
 
-- `prompt_suppression.epo`: evolutionary prompt optimization and Pareto-frontier utilities.
-- `prompt_suppression.runners`: target builders for logits, MLP neurons, residual directions,
-  and attention entries.
-- `prompt_suppression.benchmarks`: EPO, GCG, random, and natural text scan baselines.
-- `prompt_suppression.results`: candidate records, operating point summaries, and CSV IO.
-- `prompt_suppression.robustness`: deterministic prompt variant checks.
-- `prompt_suppression.plotting`: standard scatter, Pareto, bar, and robustness figures.
-- `prompt_suppression.behavior`: continuation log probability scoring for behavioral tests.
-- `prompt_suppression.activations`: helpers for fitting residual-stream directions.
-- `prompt_suppression.attribution`: token-resampling utilities for local attribution views.
-- `prompt_suppression.experiment`: optional Modal/S3 experiment orchestration helpers.
+* behavior preserving reachable set rank and displacement
+* principal angles between prompt and activation reachable subspaces
+* target aligned and orthogonal movement as control budget grows
+* minimum control cost for a requested internal setpoint
+* generation time setpoint error and dose response
+* transfer across held out sources and subject categories
+* monitor consistency over behavior equivalent states
+* causal route comparison through state, path, component, and head interventions
 
-## Basic Usage
+The planned collection and analysis path is executable. The repository does
+not contain final experiment results, and the paper does not claim them.
 
-Install dependencies with `uv`:
+## Setup
 
-```bash
-uv sync
-```
-
-```python
-from prompt_suppression.epo import epo, load_model
-from prompt_suppression.runners import logit_diff_runner
-
-model, tokenizer = load_model(model_size="70m")
-token_id = tokenizer.encode(" dog", add_special_tokens=False)[0]
-runner = logit_diff_runner(model, tokenizer, token_id, banned_text="dog")
-runner.minimize = True
-
-history = epo(
-    runner,
-    model,
-    tokenizer,
-    seq_len=12,
-    population_size=8,
-    iters=50,
-)
-```
-
-Pass `model_name` to `load_model` to use another compatible Hugging Face causal
-LM:
-
-```python
-model, tokenizer = load_model(model_name="microsoft/phi-2")
-```
-
-For Gemma 2 2B:
-
-```python
-model, tokenizer = load_model(
-    model_name="google/gemma-2-2b",
-    attn_implementation="eager",
-    torch_dtype=torch.bfloat16,
-)
-```
-
-## Reproducible experiment workflow
-
-For the full paper experiment sequence, use [docs/experiments.md](docs/experiments.md).
-For benchmark source notes, use [docs/frontier_data.md](docs/frontier_data.md).
-The commands below are minimal examples to check the workflow.
-
-Paper runs should not use the tiny files in `examples/`. Build local frontier
-benchmark prompt data first:
+The project uses `uv` for dependency resolution and command execution.
 
 ```bash
-uv sync --extra remote
-uv run prompt-suppression build-frontier-data \
+uv sync --extra remote --group dev
+uv run llm-controllability --help
+uv run python -m pytest -q
+```
+
+Gemma Scope analysis has one additional dependency group:
+
+```bash
+uv sync --extra remote --extra scope --group dev
+```
+
+## Full experiment path
+
+Build the local benchmark bundle:
+
+```bash
+uv run llm-controllability build-frontier-data \
   --out-dir data/frontier \
   --sources mmlu_pro math500 gpqa_diamond hle \
   --allow-gated \
-  --max-items-per-source 500
+  --max-items-per-source 500 \
+  --train-fraction 0.60 \
+  --validation-fraction 0.20 \
+  --behavior-limit 300
 ```
 
-`gpqa_diamond` and `hle` require accepting the dataset terms on Hugging Face.
-The generated `data/` directory is ignored because some benchmark providers ask
-users not to redistribute examples.
-
-Run a suppression experiment from a JSON target spec:
+Run the complete recommended matrix:
 
 ```bash
-uv run prompt-suppression run \
-  --spec examples/logit_spec.json \
-  --texts examples/text_pool.txt \
-  --out runs/example \
-  --methods epo random random_search minscan gcg \
-  --seeds 0 1 2
+bash scripts/run_recommended_matrix.sh
 ```
 
-Run the same workflow on Gemma 2 2B:
+The matrix is declared in `configs/recommended_matrix.json`; the launch scripts
+read model membership, protocol, precision, attention implementation, and
+enabled analyses from that file. After all nine runs finish, the script
+validates every required artifact and writes combined model tables, matched
+post training contrasts, and revision records under
+`runs/controllability/matrix`.
+
+Inspect the resolved commands without starting a model run:
 
 ```bash
-uv run prompt-suppression run \
-  --spec examples/gemma_logit_spec.json \
-  --texts examples/text_pool.txt \
-  --out runs/gemma_example \
-  --methods epo random random_search minscan gcg \
-  --seeds 0 1 2 \
-  --torch-dtype bfloat16
+uv run llm-controllability run-study-matrix \
+  --analysis controllability \
+  --dry-run
 ```
 
-Gemma models may require a Hugging Face token with Google model access enabled.
-If loading fails with an authorization error, accept the model terms on Hugging
-Face and run `huggingface-cli login`.
+Set `MODEL_REVISION` to a Hugging Face commit when a study must be pinned
+before download. If it is unset, direction fitting records the resolved commit
+and carries it into the generated search and study specifications.
 
-The command writes:
+This launches five full studies:
 
-- `runs/example/candidates.csv`: every scored prompt from search and baselines.
-- `runs/example/summary.csv`: method level operating point summaries.
+* Gemma 3 4B IT and 12B IT
+* Gemma 4 12B IT
+* Phi 4 Mini Instruct and Phi 4
 
-Generate standard figures:
+It then launches four matched comparison checkpoints: Gemma 3 4B PT,
+Gemma 3 12B PT, Gemma 4 12B PT, and Phi 4 Reasoning. These runs retain the
+same search budget, seeds, behavior gates, state collection, and downstream
+analyses. They omit only the random optimizer baselines that do not inform the
+post training comparisons.
+
+Run the token pooling comparison on all five primary checkpoints:
 
 ```bash
-uv run prompt-suppression plot \
-  --records runs/example/candidates.csv \
-  --out-dir runs/example/figures
+bash scripts/run_recommended_token_monitors.sh
 ```
 
-Evaluate deterministic robustness variants for the best prompts:
+Run the Gemma Scope 2 feature analysis on the four Gemma 3 matched
+checkpoints:
 
 ```bash
-uv run prompt-suppression robustness \
-  --spec examples/logit_spec.json \
-  --records runs/example/candidates.csv \
-  --out runs/example/robustness.csv \
-  --rows-out runs/example/robustness_rows.csv \
-  --summary-out runs/example/robustness_summary.csv
+bash scripts/run_gemma_scope_matrix.sh
 ```
 
-Score continuation preferences for behavioral checks:
+The scripts use five search seeds, full layer direction fitting, hard prompt
+and output semantic gates, task and quality gates, prompt and activation
+sweeps, transfer analysis, causal reruns, held out monitor evaluation, and
+fixed figure generation. They are experiment commands, not smoke tests.
+[docs/experiments.md](docs/experiments.md) gives the model matrix, artifact
+checks, and reporting rules.
 
-```bash
-uv run prompt-suppression behavior \
-  --evals examples/behavior_evals.json \
-  --out runs/example/behavior.csv
-```
+## Package layout
 
-Generate target specs:
+`src/llm_controllability/interventions` contains optimized suffixes, per example
+prompt rewrites, fixed activation, directional ablation, PID, and hybrid
+controls.
 
-```bash
-uv run prompt-suppression generate-targets \
-  --out runs/specs/logits_and_neurons.json \
-  --tokens " dog" " answer" \
-  --layers 8-10 \
-  --neurons 0,32,64 \
-  --model-size 70m
-```
+`src/llm_controllability/constraints` contains the hard task, semantic, output
+quality, and control budget gates.
 
-Fit residual directions across layers and write a residual target spec:
+`src/llm_controllability/reachability` generates controlled outputs, recaptures the
+resulting token sequences, and computes effective rank, Jacobian rank,
+principal angles, curvature, and connectivity.
 
-```bash
-uv run prompt-suppression fit-directions \
-  --contrast examples/contrast_pairs.json \
-  --layers 0-6 \
-  --out-dir runs/directions \
-  --name eval_awareness \
-  --spec-out runs/specs/eval_awareness_residuals.json
-```
+`src/llm_controllability/causal` contains activation caching, counterfactual and
+cross prompt state replacement, receiver blocking, component ablation, and
+head ablation.
 
-Export a paper table from a summary CSV:
+`src/llm_controllability/monitors` contains last token, mean, max, learned attention,
+multi layer, nonlinear, permuted label, and Mahalanobis OOD monitors.
 
-```bash
-uv run prompt-suppression latex-table \
-  --csv runs/example/summary.csv \
-  --out runs/example/summary_table.tex \
-  --columns target_name,method,best_target,best_target_xentropy
-```
+`src/llm_controllability/evaluation` contains minimum control cost, dose response,
+transfer, causal, invariance, corrected paired tests, and deterministic figure
+generation.
 
-Write starter behavioral evaluation templates:
+`src/llm_controllability/models` selects the correct Hugging Face loader,
+discovers nested text transformers, and applies each checkpoint's native prompt
+template. Gemma 4 uses its multimodal loader in text only mode. Thinking is
+disabled for Gemma 4 so its control budgets are comparable.
+Phi 4 Reasoning keeps its native reasoning format because reasoning post
+training is the variable in that matched comparison.
 
-```bash
-uv run prompt-suppression behavior-templates --out runs/specs/behavior_evals.json
-```
+`src/llm_controllability/features` maps accepted Gemma 3 residual states into
+Gemma Scope 2 sparse features, repeats the channel geometry analysis, and
+evaluates a held out SAE feature monitor.
 
-For CPU only smoke runs, add:
+`src/llm_controllability/optimization`, `data`, `targets`, and `reporting`
+separate prompt search, benchmark construction, target definitions, and
+artifact rendering. Small deterministic assets live under `tests/fixtures`;
+reported experiments use generated files under ignored `data/`.
 
-```bash
---device-map cpu --torch-dtype float32
-```
+EPO and GCG can optimize suffixes over sampled training contexts. Random search
+and natural text scan remain available as prompt channel controls. The matrix
+searches both decrease and increase objectives and retains eight controls from
+each Pareto set.
 
-## Notes
+## State archives
 
-The optimizer assumes white-box access to model activations and input-token
-gradients. Keep manuscript drafts, generated PDFs, posters, and local result
-artifacts outside git; the ignore rules are set up for that workflow.
+`collect-reachable` writes:
 
-## Verification
+* `states.npz`, with pooled states and optional packed token states
+* `samples.jsonl`, with prompts, outputs, intervention settings, costs, tags,
+  metrics, and every behavior gate verdict
+* `geometry.csv`, with channel specific rank, displacement, preservation, and
+  prompt to activation overlap
+* `target_geometry.csv`, `budget_growth.csv`, `layer_propagation.csv`, and
+  `principal_angles.csv`, with the remaining declared geometry measurements
+* `trajectory_geometry.csv`, with ordered control path curvature
+* `manifest.json`, with run counts, exact revisions, software, device, and
+  artifact names
 
-Run the lightweight regression tests with:
+Only states that pass every configured gate enter the reachable set geometry.
+Failed interventions remain in the archive so that preservation rates and
+failure modes are auditable.
 
-```bash
-uv run python -m unittest discover -s tests -v
-```
+## Local data
+
+Model weights, benchmark rows, generated states, result tables, paper PDFs, and
+posters are excluded from version control. Do not commit or redistribute gated
+benchmark rows. The builder code and source manifest are the reproducible part
+of the data pipeline.

@@ -1,7 +1,7 @@
 [project]
-name = "prompt-suppression-geometry"
-version = "0.0.1"
-description = "Gradient-guided prompt optimization utilities for language-model targets."
+name = "llm-controllability-geometry"
+version = "0.1.0"
+description = "Behavior-preserving reachability, controllability, and monitor-invariance experiments for language models."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
@@ -14,11 +14,11 @@ dependencies = [
   "numpy>=1.24",
   "scikit-learn>=1.3",
   "torch>=2.1",
-  "transformers>=4.40",
+  "transformers>=5.13,<6",
 ]
 
 [project.scripts]
-prompt-suppression = "prompt_suppression.cli:main"
+llm-controllability = "llm_controllability.cli:main"
 
 [project.optional-dependencies]
 remote = [
@@ -27,10 +27,20 @@ remote = [
   "modal>=0.64",
   "s3fs>=2024.2",
 ]
+scope = [
+  "sae-lens>=6.46,<7",
+]
+
+[dependency-groups]
+dev = [
+  "pytest>=8.3,<10",
+  "ruff>=0.12,<1",
+]
 
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["prompt_suppression*"]
+where = ["src"]
+include = ["llm_controllability*"]

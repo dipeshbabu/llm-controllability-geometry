@@ -35,6 +35,46 @@ Gemma Scope analysis has one additional dependency group:
 uv sync --extra remote --extra scope --group dev
 ```
 
+### Apple silicon and MPS
+
+On an Apple silicon Mac, install the same locked environment and verify that
+PyTorch can use Metal:
+
+```bash
+uv sync --extra remote --group dev
+PYTORCH_ENABLE_MPS_FALLBACK=1 uv run llm-controllability runtime-info \
+  --device-map mps \
+  --torch-dtype float16 \
+  --attn-implementation eager
+```
+
+The command must report `"selected_device": "mps"` and
+`"mps_available": true`. Runtime selection defaults to `auto`, which chooses
+CUDA when available, then MPS, then CPU. Explicitly requesting an unavailable
+backend fails instead of silently running on CPU.
+
+Run a complete model study on MPS with:
+
+```bash
+bash scripts/run_mps_model_controllability.sh \
+  google/gemma-3-4b-it \
+  gemma3_4b_it
+```
+
+The MPS launcher uses eager attention, float16 weights, one-example batches,
+MPS monitor training, and CPU fallback for PyTorch operations that Metal does
+not implement. MPS bfloat16 requires macOS 14 or newer; earlier releases
+automatically use float16.
+
+MPS cannot offload part of a checkpoint to CPU through
+`device_map="auto"`. The complete model and experiment working set must fit in
+unified memory. Start with Gemma 3 4B or Phi 4 Mini. The 12B to 14B studies
+require substantially more unified memory, especially during prompt
+optimization. See the official
+[PyTorch MPS notes](https://docs.pytorch.org/docs/stable/notes/mps.html) and
+[Transformers Apple silicon guide](https://huggingface.co/docs/transformers/perf_train_special)
+for current platform requirements.
+
 ## Full experiment path
 
 Build the local benchmark bundle:
@@ -136,7 +176,9 @@ discovers nested text transformers, and applies each checkpoint's native prompt
 template. Gemma 4 uses its multimodal loader in text only mode. Thinking is
 disabled for Gemma 4 so its control budgets are comparable.
 Phi 4 Reasoning keeps its native reasoning format because reasoning post
-training is the variable in that matched comparison.
+training is the variable in that matched comparison. The runtime resolver
+supports CUDA, Apple MPS, and CPU and records requested and resolved settings
+in each study manifest.
 
 `src/llm_controllability/features` maps accepted Gemma 3 residual states into
 Gemma Scope 2 sparse features, repeats the channel geometry analysis, and

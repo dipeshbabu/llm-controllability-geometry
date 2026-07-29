@@ -13,6 +13,8 @@ from sklearn.neural_network import MLPClassifier
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
+from llm_controllability.models.runtime import resolve_device
+
 Pooling = Literal["last", "mean", "max"]
 
 
@@ -179,7 +181,7 @@ class AttentionPooledMonitor:
     epochs: int = 50
     batch_size: int = 64
     seed: int = 0
-    device: str = "cpu"
+    device: str = "auto"
     model: _AttentionPoolClassifier | None = field(default=None, init=False, repr=False)
 
     def fit(
@@ -206,6 +208,7 @@ class AttentionPooledMonitor:
         if weights.shape != targets.shape:
             raise ValueError("sample weights must match labels")
         torch.manual_seed(self.seed)
+        self.device = str(resolve_device(self.device))
         self.model = _AttentionPoolClassifier(values.shape[-1]).to(self.device)
         optimizer = torch.optim.AdamW(
             self.model.parameters(),

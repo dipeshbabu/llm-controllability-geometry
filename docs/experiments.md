@@ -15,9 +15,32 @@ Record the software and device state before the first run:
 
 ```bash
 uv run python -VV
-uv run python -c "import torch, transformers; print(torch.__version__, transformers.__version__, torch.cuda.get_device_name())"
+uv run llm-controllability runtime-info
 git rev-parse HEAD
 ```
+
+On Apple silicon, verify MPS explicitly before downloading a checkpoint:
+
+```bash
+PYTORCH_ENABLE_MPS_FALLBACK=1 uv run llm-controllability runtime-info \
+  --device-map mps \
+  --torch-dtype float16 \
+  --attn-implementation eager
+```
+
+For a complete MPS experiment, use:
+
+```bash
+bash scripts/run_mps_model_controllability.sh \
+  google/gemma-3-4b-it \
+  gemma3_4b_it
+```
+
+The launcher sets `DEVICE_MAP=mps`, uses MPS for the learned attention monitor,
+enables CPU fallback for unsupported Metal operators, and reduces search
+batches to one. The full model and optimizer working set must fit in unified
+memory because MPS cannot partially offload a checkpoint to CPU through the
+automatic Hugging Face device map.
 
 Install the optional Gemma Scope dependencies before the feature analysis:
 

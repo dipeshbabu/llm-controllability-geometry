@@ -80,10 +80,10 @@ class History:
         )
 
     def _insert(self, new_ids, target, xentropy, keep, runtime):
-        self.ids.append(new_ids.cpu().numpy())
-        self.target.append(target.cpu().numpy())
-        self.xentropy.append(xentropy.cpu().numpy())
-        self.keep.append(keep.cpu().numpy())
+        self.ids.append(new_ids.detach().cpu().numpy())
+        self.target.append(target.detach().float().cpu().numpy())
+        self.xentropy.append(xentropy.detach().float().cpu().numpy())
+        self.keep.append(keep.detach().cpu().numpy())
         self.runtime.append(runtime)
 
     def _finalize(self):

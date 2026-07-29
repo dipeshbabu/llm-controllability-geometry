@@ -128,21 +128,21 @@ def random_token_baseline(
     seq_len: int = 24,
     batch_size: int = 64,
 ) -> list[CandidateRecord]:
-    generator = torch.Generator(device=model_device(model))
+    generator = torch.Generator(device="cpu")
     generator.manual_seed(seed)
     allowed_ids = allowed_candidate_token_ids(
         tokenizer,
         embedding_size=model.get_input_embeddings().num_embeddings,
-        device=model_device(model),
+        device="cpu",
     )
     sampled = torch.randint(
         low=0,
         high=allowed_ids.numel(),
         size=(n_prompts, seq_len),
         generator=generator,
-        device=model_device(model),
+        device="cpu",
     )
-    input_ids = allowed_ids[sampled]
+    input_ids = allowed_ids[sampled].to(model_device(model))
     return score_input_ids(
         cache_run,
         model,

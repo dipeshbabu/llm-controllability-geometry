@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+import warnings
 from pathlib import Path
 from unittest import mock
 
@@ -17,6 +18,7 @@ from llm_controllability.features.gemma_scope import (
     gemma_scope_sae_id,
     run_gemma_scope_study,
 )
+from llm_controllability.models import loading
 from llm_controllability.models.adapters import (
     ModelProfile,
     attach_model_profile,
@@ -28,6 +30,7 @@ from llm_controllability.models.adapters import (
 )
 from llm_controllability.models.architecture import get_layers
 from llm_controllability.models.loading import load_model
+from llm_controllability.models.runtime import model_runtime_config
 from llm_controllability.reachability.io import save_state_samples
 
 
@@ -254,12 +257,60 @@ class ModelAdapterTests(unittest.TestCase):
         model, tokenizer = load_model(
             model_name="google/gemma-3-4b-it",
             device_map="cpu",
+            torch_dtype=torch.float32,
             attn_implementation="eager",
         )
 
         model_loader.assert_called_once()
         self.assertEqual(model_profile(model).family, "gemma3")
         self.assertEqual(model_profile(tokenizer).prompt_format, "chat")
+
+    @mock.patch(
+        "llm_controllability.models.runtime.platform.mac_ver",
+        return_value=("14.6", ("", "", ""), ""),
+    )
+    @mock.patch(
+        "llm_controllability.models.runtime.mps_is_available",
+        return_value=True,
+    )
+    @mock.patch(
+        "llm_controllability.models.runtime.torch.cuda.is_available",
+        return_value=False,
+    )
+    @mock.patch(
+        "llm_controllability.models.loading.transformers.AutoTokenizer.from_pretrained"
+    )
+    def test_loader_resolves_auto_to_mps(
+        self,
+        tokenizer_loader,
+        _cuda,
+        _mps,
+        _mac,
+    ):
+        model_class = mock.Mock()
+        model_class.from_pretrained.return_value = DummyModel()
+        tokenizer_loader.return_value = DummyTokenizer()
+
+        with mock.patch.dict(
+            loading.transformers.__dict__,
+            {"AutoModelForCausalLM": model_class},
+        ), warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            model, _ = load_model(
+                model_name="microsoft/phi-4",
+                device_map="auto",
+                torch_dtype=torch.bfloat16,
+                attn_implementation="flash_attention_2",
+            )
+
+        self.assertTrue(any("flash_attention_2" in str(item.message) for item in caught))
+        kwargs = model_class.from_pretrained.call_args.kwargs
+        self.assertEqual(kwargs["device_map"], "mps")
+        self.assertEqual(kwargs["dtype"], torch.bfloat16)
+        self.assertEqual(kwargs["attn_implementation"], "eager")
+        runtime = model_runtime_config(model)
+        self.assertIsNotNone(runtime)
+        self.assertEqual(runtime.device, torch.device("mps"))
 
     def test_scope_identifiers_and_analysis(self):
         self.assertEqual(

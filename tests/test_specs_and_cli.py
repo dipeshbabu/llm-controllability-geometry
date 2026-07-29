@@ -17,6 +17,29 @@ class DummyTokenizer:
 
 
 class SpecAndCliTests(unittest.TestCase):
+    def test_compute_commands_default_to_automatic_device_selection(self):
+        parser = build_parser()
+
+        run = parser.parse_args(["run", "--spec", "spec.json", "--out", "runs/x"])
+        scope = parser.parse_args(
+            [
+                "gemma-scope",
+                "--states-dir",
+                "runs/x",
+                "--out-dir",
+                "runs/scope",
+                "--model-name",
+                "google/gemma-3-4b-it",
+                "--layer",
+                "12",
+            ]
+        )
+        info = parser.parse_args(["runtime-info"])
+
+        self.assertEqual(run.device_map, "auto")
+        self.assertEqual(scope.device, "auto")
+        self.assertEqual(info.device_map, "auto")
+
     def test_token_id_from_text_requires_single_token(self):
         self.assertEqual(token_id_from_text(DummyTokenizer(), " one"), 1)
         with self.assertRaises(ValueError):

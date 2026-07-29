@@ -148,7 +148,7 @@ def build_study_spec(
     natural_controls_path: str | Path,
     example_limit: int | None = None,
     dtype: str = "bfloat16",
-    device_map: str = "cuda",
+    device_map: str = "auto",
     attn_implementation: str | None = None,
     revision: str | None = None,
     strengths: Sequence[float] = (-4.0, -2.0, -1.0, 1.0, 2.0, 4.0),

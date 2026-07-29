@@ -16,6 +16,7 @@ import torch
 from llm_controllability.controllability.types import ControlChannel, StateSample
 from llm_controllability.evaluation.invariance import monitor_invariance
 from llm_controllability.evaluation.monitor_study import _select_threshold
+from llm_controllability.models.runtime import resolve_device
 from llm_controllability.monitors import LinearMonitor, augment_with_reachable_states
 from llm_controllability.reachability.geometry import (
     effective_rank,
@@ -465,7 +466,7 @@ def run_gemma_scope_study(
     site: str = "resid_post_all",
     width: str = "16k",
     l0: str = "small",
-    device: str = "cuda",
+    device: str = "auto",
     top_k: int = 128,
     analysis_features: int = 2048,
     batch_size: int = 32,
@@ -479,8 +480,9 @@ def run_gemma_scope_study(
         layer = _best_layer(direction_sweep)
     release = release or gemma_scope_release(model_name, site=site)
     sae_id = sae_id or gemma_scope_sae_id(layer, width=width, l0=l0)
+    resolved_device = str(resolve_device(device))
     if sae is None:
-        sae = _load_sae(release, sae_id, device)
+        sae = _load_sae(release, sae_id, resolved_device)
 
     samples = [
         sample
@@ -525,6 +527,8 @@ def run_gemma_scope_study(
         "layer": layer,
         "release": release,
         "sae_id": sae_id,
+        "requested_device": device,
+        "device": resolved_device,
         "n_samples": len(sample_rows),
         "n_monitor_score_rows": len(monitor_scores),
         "include_unpreserved": include_unpreserved,

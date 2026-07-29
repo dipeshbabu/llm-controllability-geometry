@@ -10,6 +10,10 @@ from llm_controllability.models.adapters import (
     ensure_padding_token,
     resolve_model_profile,
 )
+from llm_controllability.models.runtime import (
+    attach_runtime_config,
+    resolve_runtime,
+)
 
 
 def load_tokenizer(
@@ -35,9 +39,9 @@ def load_model(
     model_name: str | None = None,
     tokenizer_name: str | None = None,
     requires_grad: bool = False,
-    attn_implementation: str | None = "flash_attention_2",
-    device_map: str = "cuda",
-    torch_dtype: torch.dtype = torch.float16,
+    attn_implementation: str | None = None,
+    device_map: str = "auto",
+    torch_dtype: torch.dtype | str = torch.float16,
     prompt_format: str = "auto",
     enable_thinking: bool | None = None,
     trust_remote_code: bool | None = None,
@@ -52,17 +56,22 @@ def load_model(
         enable_thinking=enable_thinking,
         trust_remote_code=trust_remote_code,
     )
+    runtime = resolve_runtime(
+        device_map=device_map,
+        dtype=torch_dtype,
+        attention_implementation=attn_implementation,
+    )
     model_kwargs = {
         "low_cpu_mem_usage": True,
         "use_cache": False,
-        "device_map": device_map,
+        "device_map": runtime.device_map,
         "trust_remote_code": profile.trust_remote_code,
         "revision": revision,
     }
     transformers_major = int(transformers.__version__.split(".", 1)[0])
-    model_kwargs["dtype" if transformers_major >= 5 else "torch_dtype"] = torch_dtype
-    if attn_implementation is not None:
-        model_kwargs["attn_implementation"] = attn_implementation
+    model_kwargs["dtype" if transformers_major >= 5 else "torch_dtype"] = runtime.dtype
+    if runtime.attention_implementation is not None:
+        model_kwargs["attn_implementation"] = runtime.attention_implementation
 
     model_class = (
         transformers.AutoModelForMultimodalLM
@@ -85,4 +94,5 @@ def load_model(
     if added_tokens:
         model.resize_token_embeddings(len(tokenizer))
     attach_model_profile(model, tokenizer, profile)
+    attach_runtime_config(model, runtime)
     return model, tokenizer

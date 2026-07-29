@@ -608,7 +608,7 @@ def run_causal_study(
         model_name=model_config["name"],
         tokenizer_name=model_config.get("tokenizer_name"),
         attn_implementation=model_config.get("attn_implementation"),
-        device_map=model_config.get("device_map", "cuda"),
+        device_map=model_config.get("device_map", "auto"),
         torch_dtype=dtype,
         prompt_format=model_config.get("prompt_format", "auto"),
         enable_thinking=model_config.get("enable_thinking"),

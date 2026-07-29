@@ -35,7 +35,12 @@ from llm_controllability.interventions import (
     PromptIntervention,
 )
 from llm_controllability.interventions.core import Intervention
+from llm_controllability.models.adapters import model_device, model_dtype
 from llm_controllability.models.loading import load_model
+from llm_controllability.models.runtime import (
+    model_runtime_config,
+    runtime_capabilities,
+)
 from llm_controllability.reachability.collection import (
     collect_reachable_states,
     load_examples,
@@ -327,7 +332,7 @@ def _runtime_metadata(
     tokenizer,
 ) -> dict[str, Any]:
     config = getattr(model, "config", None)
-    repository_root = Path(__file__).resolve().parents[2]
+    repository_root = Path(__file__).resolve().parents[3]
     lock_path = repository_root / "uv.lock"
     try:
         repository_commit = subprocess.run(
@@ -345,6 +350,9 @@ def _runtime_metadata(
         "torch": torch.__version__,
         "transformers": transformers.__version__,
         "cuda_runtime": torch.version.cuda,
+        "model_device": str(model_device(model)),
+        "model_dtype": str(model_dtype(model)).removeprefix("torch."),
+        "accelerator": runtime_capabilities(),
         "model_revision": getattr(config, "_commit_hash", None),
         "tokenizer_revision": getattr(tokenizer, "init_kwargs", {}).get(
             "_commit_hash"
@@ -369,6 +377,8 @@ def _runtime_metadata(
         ]
     else:
         metadata["gpu"] = []
+    runtime = model_runtime_config(model)
+    metadata["resolved_runtime"] = runtime.manifest() if runtime is not None else None
     return metadata
 
 
@@ -386,7 +396,7 @@ def run_study(spec_path: str | Path, out_dir: str | Path) -> dict[str, Any]:
         model_name=model_config["name"],
         tokenizer_name=model_config.get("tokenizer_name"),
         attn_implementation=model_config.get("attn_implementation"),
-        device_map=model_config.get("device_map", "cuda"),
+        device_map=model_config.get("device_map", "auto"),
         torch_dtype=dtype,
         prompt_format=model_config.get("prompt_format", "auto"),
         enable_thinking=model_config.get("enable_thinking"),

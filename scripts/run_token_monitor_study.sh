@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
+export PYTORCH_ENABLE_MPS_FALLBACK=${PYTORCH_ENABLE_MPS_FALLBACK:-1}
 
 MODEL_NAME=${1:?usage: run_token_monitor_study.sh MODEL_NAME SLUG [DTYPE] [ATTN_IMPLEMENTATION]}
 SLUG=${2:?usage: run_token_monitor_study.sh MODEL_NAME SLUG [DTYPE] [ATTN_IMPLEMENTATION]}
 DTYPE=${3:-bfloat16}
 ATTN_IMPLEMENTATION=${4:-}
 MODEL_REVISION=${MODEL_REVISION:-}
+DEVICE_MAP=${DEVICE_MAP:-auto}
+MONITOR_DEVICE=${MONITOR_DEVICE:-auto}
 
 DATA_ROOT=${DATA_ROOT:-data/frontier}
 RUN_ROOT=${RUN_ROOT:-runs/controllability}
@@ -29,6 +32,7 @@ uv run llm-controllability build-study-spec \
   --model-name "${MODEL_NAME}" \
   "${REVISION_ARGS[@]}" \
   "${ATTN_ARGS[@]}" \
+  --device-map "${DEVICE_MAP}" \
   --torch-dtype "${DTYPE}" \
   --data "${DATA_ROOT}/behavior/controllability_all.jsonl" \
   --example-limit 64 \
@@ -47,7 +51,7 @@ uv run llm-controllability monitor-invariance \
   --states-dir "${TOKEN_OUT}" \
   --out-dir "${RUN_ROOT}/${SLUG}/token_monitors" \
   --monitors last_linear mean_linear max_linear attention \
-  --monitor-device cuda \
+  --monitor-device "${MONITOR_DEVICE}" \
   --train-fraction 0.60 \
   --validation-fraction 0.20 \
   --seed 0

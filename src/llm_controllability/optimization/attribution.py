@@ -46,8 +46,8 @@ def viz(
     target_name="Target",
     colormap="Reds",
 ):
-    resamplings = resamplings.cpu().numpy()
-    targets_nonneg = targets.cpu().numpy()
+    resamplings = resamplings.detach().cpu().numpy()
+    targets_nonneg = targets.detach().float().cpu().numpy()
     targets_nonneg[targets_nonneg < 0] = 0
 
     amax = (baseline - targets_nonneg).max(axis=-1)
@@ -104,7 +104,7 @@ def viz(
         worst_idx = targets[i].argmin()
         worst_token = tokenizer.decode(resamplings[i, worst_idx, i])
         worst_target = targets[i, worst_idx]
-        top3_idx = targets[i].topk(k=3).indices.numpy()
+        top3_idx = targets[i].topk(k=3).indices.detach().cpu().numpy()
         top3_tokens = tokenizer.batch_decode(resamplings[i, top3_idx, i])
         top3_target = targets[i, top3_idx]
         tooltip = f"""

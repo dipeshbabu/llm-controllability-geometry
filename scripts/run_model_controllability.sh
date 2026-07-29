@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+export PYTORCH_ENABLE_MPS_FALLBACK=${PYTORCH_ENABLE_MPS_FALLBACK:-1}
 
 MODEL_NAME=${1:?usage: run_model_controllability.sh MODEL_NAME SLUG [DTYPE] [ATTN_IMPLEMENTATION] [PROTOCOL]}
 SLUG=${2:?usage: run_model_controllability.sh MODEL_NAME SLUG [DTYPE] [ATTN_IMPLEMENTATION] [PROTOCOL]}
@@ -29,6 +30,8 @@ fi
 DIRECTION_BATCH_SIZE=${DIRECTION_BATCH_SIZE:-${BATCH_SIZE}}
 MAX_CONTEXT_LENGTH=${MAX_CONTEXT_LENGTH:-768}
 MODEL_REVISION=${MODEL_REVISION:-}
+DEVICE_MAP=${DEVICE_MAP:-auto}
+MONITOR_DEVICE=${MONITOR_DEVICE:-auto}
 
 case "${PROTOCOL}" in
   full)
@@ -68,6 +71,7 @@ uv run llm-controllability fit-directions \
   --model-name "${MODEL_NAME}" \
   "${REVISION_ARGS[@]}" \
   "${ATTN_ARGS[@]}" \
+  --device-map "${DEVICE_MAP}" \
   --torch-dtype "${DTYPE}" \
   --contrast "${DATA_ROOT}/contrasts/eval_awareness_train.json" \
   --contrast-eval "${DATA_ROOT}/contrasts/eval_awareness_validation.json" \
@@ -90,6 +94,7 @@ uv run llm-controllability run \
   --out "${PROMPT_RUN}" \
   --methods "${METHOD_ARGS[@]}" \
   --seeds "${SEED_ARGS[@]}" \
+  --device-map "${DEVICE_MAP}" \
   --torch-dtype "${DTYPE}" \
   --seq-len 32 \
   --population-size 24 \
@@ -111,6 +116,7 @@ uv run llm-controllability build-study-spec \
   --model-name "${MODEL_NAME}" \
   "${REVISION_ARGS[@]}" \
   "${ATTN_ARGS[@]}" \
+  --device-map "${DEVICE_MAP}" \
   --torch-dtype "${DTYPE}" \
   --data "${DATA_ROOT}/behavior/controllability_all.jsonl" \
   --example-limit "${EXAMPLE_LIMIT}" \
@@ -168,6 +174,7 @@ uv run llm-controllability monitor-invariance \
   --states-dir "${STUDY_OUT}" \
   --out-dir "${RUN_ROOT}/${SLUG}/monitors" \
   --monitors linear nonlinear multilayer_linear random_linear \
+  --monitor-device "${MONITOR_DEVICE}" \
   --train-fraction 0.60 \
   --validation-fraction 0.20 \
   --reachable-weight 1.0 \

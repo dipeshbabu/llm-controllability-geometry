@@ -33,6 +33,10 @@ from llm_controllability.evaluation.transfer_study import run_transfer_study
 from llm_controllability.features.gemma_scope import run_gemma_scope_study
 from llm_controllability.models.architecture import get_layers
 from llm_controllability.models.loading import load_model
+from llm_controllability.models.runtime import (
+    resolve_runtime,
+    runtime_capabilities,
+)
 from llm_controllability.optimization.benchmarks import (
     epo_suppression_run,
     gcg_suppression_run,
@@ -74,6 +78,23 @@ from llm_controllability.targets.specs import build_runner_from_spec, target_nam
 def _load_json(path: str | Path) -> dict:
     with Path(path).open("r", encoding="utf-8") as f:
         return json.load(f)
+
+
+def runtime_info(args) -> None:
+    runtime = resolve_runtime(
+        device_map=args.device_map,
+        dtype=args.torch_dtype,
+        attention_implementation=args.attn_implementation,
+    )
+    print(
+        json.dumps(
+            {
+                **runtime_capabilities(),
+                "runtime": runtime.manifest(),
+            },
+            indent=2,
+        )
+    )
 
 
 def _model_profile_kwargs(spec: dict) -> dict:
@@ -691,6 +712,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="llm-controllability")
     sub = parser.add_subparsers(dest="command", required=True)
 
+    runtime = sub.add_parser(
+        "runtime-info",
+        help="report resolved CUDA, MPS, or CPU runtime settings",
+    )
+    runtime.add_argument("--device-map", default="auto")
+    runtime.add_argument(
+        "--torch-dtype",
+        choices=["float16", "bfloat16", "float32"],
+        default="float16",
+    )
+    runtime.add_argument("--attn-implementation")
+    runtime.set_defaults(func=runtime_info)
+
     run = sub.add_parser("run", help="optimize prompt controls from a JSON target spec")
     run.add_argument("--spec", required=True)
     run.add_argument("--out", required=True)
@@ -704,7 +738,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--model-name")
     run.add_argument("--revision")
     run.add_argument("--attn-implementation", default=None)
-    run.add_argument("--device-map", default="cuda")
+    run.add_argument("--device-map", default="auto")
     run.add_argument(
         "--torch-dtype",
         choices=["float16", "bfloat16", "float32"],
@@ -746,7 +780,7 @@ def build_parser() -> argparse.ArgumentParser:
     robust.add_argument("--model-name")
     robust.add_argument("--revision")
     robust.add_argument("--attn-implementation", default=None)
-    robust.add_argument("--device-map", default="cuda")
+    robust.add_argument("--device-map", default="auto")
     robust.add_argument(
         "--torch-dtype",
         choices=["float16", "bfloat16", "float32"],
@@ -764,7 +798,7 @@ def build_parser() -> argparse.ArgumentParser:
     beh.add_argument("--model-name")
     beh.add_argument("--revision")
     beh.add_argument("--attn-implementation", default=None)
-    beh.add_argument("--device-map", default="cuda")
+    beh.add_argument("--device-map", default="auto")
     beh.add_argument(
         "--torch-dtype",
         choices=["float16", "bfloat16", "float32"],
@@ -814,7 +848,7 @@ def build_parser() -> argparse.ArgumentParser:
     dirs.add_argument("--revision")
     dirs.add_argument("--tokenizer-name")
     dirs.add_argument("--attn-implementation", default=None)
-    dirs.add_argument("--device-map", default="cuda")
+    dirs.add_argument("--device-map", default="auto")
     dirs.add_argument(
         "--torch-dtype",
         choices=["float16", "bfloat16", "float32"],
@@ -898,7 +932,7 @@ def build_parser() -> argparse.ArgumentParser:
     monitors.add_argument("--train-fraction", type=float, default=0.6)
     monitors.add_argument("--validation-fraction", type=float, default=0.2)
     monitors.add_argument("--reachable-weight", type=float, default=1.0)
-    monitors.add_argument("--monitor-device", default="cpu")
+    monitors.add_argument("--monitor-device", default="auto")
     monitors.add_argument("--seed", type=int, default=0)
     monitors.set_defaults(func=monitor_invariance_study)
 
@@ -938,7 +972,7 @@ def build_parser() -> argparse.ArgumentParser:
     study_spec.add_argument("--natural-controls", required=True)
     study_spec.add_argument("--example-limit", type=int)
     study_spec.add_argument("--attn-implementation")
-    study_spec.add_argument("--device-map", default="cuda")
+    study_spec.add_argument("--device-map", default="auto")
     study_spec.add_argument(
         "--torch-dtype",
         choices=["float16", "bfloat16", "float32"],
@@ -1068,7 +1102,7 @@ def build_parser() -> argparse.ArgumentParser:
     scope.add_argument("--site", default="resid_post_all")
     scope.add_argument("--width", choices=["16k", "262k"], default="16k")
     scope.add_argument("--l0", choices=["small", "big"], default="small")
-    scope.add_argument("--device", default="cuda")
+    scope.add_argument("--device", default="auto")
     scope.add_argument("--top-k", type=int, default=128)
     scope.add_argument("--analysis-features", type=int, default=2048)
     scope.add_argument("--batch-size", type=int, default=32)

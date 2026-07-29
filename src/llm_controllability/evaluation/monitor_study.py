@@ -477,7 +477,7 @@ def run_monitor_study(
     train_fraction: float = 0.6,
     validation_fraction: float = 0.2,
     reachable_weight: float = 1.0,
-    monitor_device: str = "cpu",
+    monitor_device: str = "auto",
     seed: int = 0,
 ) -> dict[str, int]:
     samples = load_state_samples(states_dir)

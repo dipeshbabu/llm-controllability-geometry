@@ -476,10 +476,13 @@ class ControllabilityTests(unittest.TestCase):
             output = model(torch.zeros(1, 1, 2))
 
         self.assertAlmostEqual(float(output[0, 0, 0]), 4.0)
-        self.assertGreater(controller.control_cost(), 0.0)
+        self.assertEqual(controller.control_cost(), 2.0)
         diagnostics = controller.diagnostics()
         self.assertEqual(diagnostics["generation_tracking_steps"], 1.0)
-        self.assertGreater(diagnostics["generation_tracking_mae"], 0.0)
+        self.assertEqual(diagnostics["generation_tracking_mae"], 2.0)
+        self.assertEqual(diagnostics["generation_tracking_max_error"], 2.0)
+        self.assertEqual(diagnostics["generation_tracking_final_error"], 2.0)
+        self.assertEqual(diagnostics["generation_mean_abs_update"], 2.0)
 
     def test_adaptive_state_capture_preserves_controller_history(self):
         model = ReplayModel()
@@ -493,7 +496,7 @@ class ControllabilityTests(unittest.TestCase):
             token_scope="last",
         )
 
-        _, _, states, _, execution = run_and_capture(
+        _, _, states, token_states, execution = run_and_capture(
             model,
             ReplayTokenizer(),
             "question",
@@ -504,6 +507,18 @@ class ControllabilityTests(unittest.TestCase):
 
         self.assertEqual(execution["generation_tracking_steps"], 2.0)
         self.assertAlmostEqual(float(states[0][0]), 7.0)
+        self.assertEqual(token_states, {})
+
+        _, _, _, token_states, _ = run_and_capture(
+            model,
+            ReplayTokenizer(),
+            "question",
+            controller,
+            [0],
+            {"max_new_tokens": 2, "do_sample": False, "num_beams": 1},
+            store_token_states=True,
+        )
+        self.assertEqual(token_states[0].shape, (4, 2))
 
     def test_mapped_prompt_intervention_uses_declared_rewrite_and_edit_cost(self):
         class Tokenizer:

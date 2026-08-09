@@ -4,7 +4,7 @@ set -euo pipefail
 MODEL_NAME=${1:?usage: run_mps_model_controllability.sh MODEL_NAME SLUG [DTYPE] [PROTOCOL]}
 SLUG=${2:?usage: run_mps_model_controllability.sh MODEL_NAME SLUG [DTYPE] [PROTOCOL]}
 DTYPE=${3:-float16}
-PROTOCOL=${4:-full}
+PROTOCOL=${4:-pilot}
 
 export PYTORCH_ENABLE_MPS_FALLBACK=${PYTORCH_ENABLE_MPS_FALLBACK:-1}
 export DEVICE_MAP=mps

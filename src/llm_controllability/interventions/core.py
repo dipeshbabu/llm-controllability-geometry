@@ -313,16 +313,22 @@ class AdaptiveActivationController(Intervention):
     channel: ControlChannel = field(default=ControlChannel.ACTIVATION, init=False)
     _integral: torch.Tensor | None = field(default=None, init=False, repr=False)
     _previous_error: torch.Tensor | None = field(default=None, init=False, repr=False)
-    _energy_squared: float = field(default=0.0, init=False, repr=False)
-    _tracking_errors: list[float] = field(default_factory=list, init=False, repr=False)
-    _updates: list[float] = field(default_factory=list, init=False, repr=False)
+    _energy_squared: torch.Tensor | None = field(default=None, init=False, repr=False)
+    _tracking_error_sum: torch.Tensor | None = field(default=None, init=False, repr=False)
+    _tracking_error_max: torch.Tensor | None = field(default=None, init=False, repr=False)
+    _tracking_error_final: torch.Tensor | None = field(default=None, init=False, repr=False)
+    _update_sum: torch.Tensor | None = field(default=None, init=False, repr=False)
+    _tracking_steps: int = field(default=0, init=False, repr=False)
 
     def reset(self) -> None:
         self._integral = None
         self._previous_error = None
-        self._energy_squared = 0.0
-        self._tracking_errors = []
-        self._updates = []
+        self._energy_squared = None
+        self._tracking_error_sum = None
+        self._tracking_error_max = None
+        self._tracking_error_final = None
+        self._update_sum = None
+        self._tracking_steps = 0
 
     @contextlib.contextmanager
     def apply(self, model: torch.nn.Module) -> Iterator[None]:
@@ -345,9 +351,24 @@ class AdaptiveActivationController(Intervention):
             if self.max_update is not None:
                 update = update.clamp(-self.max_update, self.max_update)
             self._previous_error = error.detach()
-            self._energy_squared += float(update.detach().float().square().sum().cpu())
-            self._tracking_errors.append(float(error.detach().float().abs().mean().cpu()))
-            self._updates.append(float(update.detach().float().abs().mean().cpu()))
+            energy = update.detach().float().square().sum()
+            tracking_error = error.detach().float().abs().mean()
+            mean_update = update.detach().float().abs().mean()
+            if self._energy_squared is None:
+                self._energy_squared = energy
+                self._tracking_error_sum = tracking_error
+                self._tracking_error_max = tracking_error
+                self._update_sum = mean_update
+            else:
+                self._energy_squared += energy
+                self._tracking_error_sum += tracking_error
+                self._tracking_error_max = torch.maximum(
+                    self._tracking_error_max,
+                    tracking_error,
+                )
+                self._update_sum += mean_update
+            self._tracking_error_final = tracking_error
+            self._tracking_steps += 1
             updated = selected + update.unsqueeze(-1) * vector.view(1, 1, -1)
             return _replace_hidden(output, restore(updated))
 
@@ -359,7 +380,9 @@ class AdaptiveActivationController(Intervention):
             handle.remove()
 
     def control_cost(self, tokenizer=None) -> float:
-        return math.sqrt(self._energy_squared)
+        if self._energy_squared is None:
+            return 0.0
+        return math.sqrt(float(self._energy_squared.cpu()))
 
     def parameters(self) -> dict[str, Any]:
         return {
@@ -373,7 +396,7 @@ class AdaptiveActivationController(Intervention):
         }
 
     def diagnostics(self) -> dict[str, float]:
-        if not self._tracking_errors:
+        if self._tracking_steps == 0:
             return {
                 "generation_tracking_steps": 0.0,
                 "generation_tracking_mae": float("nan"),
@@ -381,16 +404,24 @@ class AdaptiveActivationController(Intervention):
                 "generation_tracking_final_error": float("nan"),
                 "generation_mean_abs_update": float("nan"),
             }
+        assert self._tracking_error_sum is not None
+        assert self._tracking_error_max is not None
+        assert self._tracking_error_final is not None
+        assert self._update_sum is not None
+        error_sum, max_error, final_error, update_sum = torch.stack(
+            (
+                self._tracking_error_sum,
+                self._tracking_error_max,
+                self._tracking_error_final,
+                self._update_sum,
+            )
+        ).cpu().tolist()
         return {
-            "generation_tracking_steps": float(len(self._tracking_errors)),
-            "generation_tracking_mae": float(
-                sum(self._tracking_errors) / len(self._tracking_errors)
-            ),
-            "generation_tracking_max_error": float(max(self._tracking_errors)),
-            "generation_tracking_final_error": float(self._tracking_errors[-1]),
-            "generation_mean_abs_update": float(
-                sum(self._updates) / len(self._updates)
-            ),
+            "generation_tracking_steps": float(self._tracking_steps),
+            "generation_tracking_mae": error_sum / self._tracking_steps,
+            "generation_tracking_max_error": max_error,
+            "generation_tracking_final_error": final_error,
+            "generation_mean_abs_update": update_sum / self._tracking_steps,
         }
 
 

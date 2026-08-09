@@ -33,7 +33,9 @@ For a complete MPS experiment, use:
 ```bash
 bash scripts/run_mps_model_controllability.sh \
   google/gemma-3-4b-it \
-  gemma3_4b_it
+  gemma3_4b_it \
+  float16 \
+  full
 ```
 
 The launcher sets `DEVICE_MAP=mps`, uses MPS for the learned attention monitor,
@@ -41,6 +43,11 @@ enables CPU fallback for unsupported Metal operators, and reduces search
 batches to one. The full model and optimizer working set must fit in unified
 memory because MPS cannot partially offload a checkpoint to CPU through the
 automatic Hugging Face device map.
+
+Omit the final `float16 full` arguments for a local pilot: one seed, four
+optimization contexts, 50 GCG iterations, 128 study examples, two prompt
+controls per direction, and 64 generated tokens. Pilot results validate the
+pipeline but are not substitutes for the reported protocol.
 
 Install the optional Gemma Scope dependencies before the feature analysis:
 

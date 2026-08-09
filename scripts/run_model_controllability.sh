@@ -10,9 +10,6 @@ PROTOCOL=${5:-full}
 
 DATA_ROOT=${DATA_ROOT:-data/frontier}
 RUN_ROOT=${RUN_ROOT:-runs/controllability}
-SEEDS=${SEEDS:-"0 1 2 3 4"}
-CONTEXT_COUNT=${CONTEXT_COUNT:-16}
-EXAMPLE_LIMIT=${EXAMPLE_LIMIT:-512}
 
 if [[ -z "${BATCH_SIZE:-}" ]]; then
   case "${MODEL_NAME}" in
@@ -34,17 +31,46 @@ DEVICE_MAP=${DEVICE_MAP:-auto}
 MONITOR_DEVICE=${MONITOR_DEVICE:-auto}
 
 case "${PROTOCOL}" in
-  full)
-    METHODS=${METHODS:-"epo gcg random random_search minscan"}
+  pilot)
+    METHODS=${METHODS:-"gcg random minscan"}
+    SEEDS=${SEEDS:-"0"}
+    CONTEXT_COUNT=${CONTEXT_COUNT:-4}
+    EXAMPLE_LIMIT=${EXAMPLE_LIMIT:-128}
+    POPULATION_SIZE=${POPULATION_SIZE:-8}
+    ITERS=${ITERS:-50}
+    EXPLORE_PER_POP=${EXPLORE_PER_POP:-8}
+    RANDOM_PROMPTS=${RANDOM_PROMPTS:-128}
+    PROMPT_TOP_N=${PROMPT_TOP_N:-2}
+    MAX_NEW_TOKENS=${MAX_NEW_TOKENS:-64}
+    JACOBIAN_EXAMPLE_LIMIT=${JACOBIAN_EXAMPLE_LIMIT:-4}
+    CAUSAL_MAX_PAIRS=${CAUSAL_MAX_PAIRS:-8}
     ;;
-  matched)
-    METHODS=${METHODS:-"epo gcg"}
+  full|matched)
+    if [[ "${PROTOCOL}" == "full" ]]; then
+      METHODS=${METHODS:-"epo gcg random random_search minscan"}
+    else
+      METHODS=${METHODS:-"epo gcg"}
+    fi
+    SEEDS=${SEEDS:-"0 1 2 3 4"}
+    CONTEXT_COUNT=${CONTEXT_COUNT:-16}
+    EXAMPLE_LIMIT=${EXAMPLE_LIMIT:-512}
+    POPULATION_SIZE=${POPULATION_SIZE:-24}
+    ITERS=${ITERS:-150}
+    EXPLORE_PER_POP=${EXPLORE_PER_POP:-16}
+    RANDOM_PROMPTS=${RANDOM_PROMPTS:-256}
+    PROMPT_TOP_N=${PROMPT_TOP_N:-8}
+    MAX_NEW_TOKENS=${MAX_NEW_TOKENS:-128}
+    JACOBIAN_EXAMPLE_LIMIT=${JACOBIAN_EXAMPLE_LIMIT:-16}
+    CAUSAL_MAX_PAIRS=${CAUSAL_MAX_PAIRS:-32}
     ;;
   *)
-    echo "PROTOCOL must be 'full' or 'matched'" >&2
+    echo "PROTOCOL must be 'pilot', 'full', or 'matched'" >&2
     exit 2
     ;;
 esac
+
+SEQ_LEN=${SEQ_LEN:-32}
+TOPK=${TOPK:-256}
 
 read -r -a METHOD_ARGS <<< "${METHODS}"
 read -r -a SEED_ARGS <<< "${SEEDS}"
@@ -96,18 +122,19 @@ uv run llm-controllability run \
   --seeds "${SEED_ARGS[@]}" \
   --device-map "${DEVICE_MAP}" \
   --torch-dtype "${DTYPE}" \
-  --seq-len 32 \
-  --population-size 24 \
-  --iters 150 \
-  --explore-per-pop 16 \
+  --seq-len "${SEQ_LEN}" \
+  --population-size "${POPULATION_SIZE}" \
+  --iters "${ITERS}" \
+  --explore-per-pop "${EXPLORE_PER_POP}" \
   --batch-size "${BATCH_SIZE}" \
-  --topk 256
+  --topk "${TOPK}" \
+  --random-prompts "${RANDOM_PROMPTS}"
 
 uv run llm-controllability export-prompt-controls \
   --records "${PROMPT_RUN}/candidates.csv" \
   --direction-sweep "${SWEEP_CSV}" \
   --methods epo gcg \
-  --top-n 8 \
+  --top-n "${PROMPT_TOP_N}" \
   --bidirectional \
   --out "${PROMPT_CONTROLS}"
 
@@ -124,6 +151,7 @@ uv run llm-controllability build-study-spec \
   --layers sweep \
   --prompt-controls "${PROMPT_CONTROLS}" \
   --natural-controls "${DATA_ROOT}/controls/prompt_rewrites.json" \
+  --max-new-tokens "${MAX_NEW_TOKENS}" \
   --semantic-model sentence-transformers/all-mpnet-base-v2 \
   --minimum-semantic-similarity 0.80 \
   --maximum-quality-drop 0.75 \
@@ -143,7 +171,7 @@ uv run llm-controllability analyze-control \
 uv run llm-controllability analyze-jacobians \
   --spec "${STUDY_SPEC}" \
   --out "${RUN_ROOT}/${SLUG}/jacobians.csv" \
-  --example-limit 16 \
+  --example-limit "${JACOBIAN_EXAMPLE_LIMIT}" \
   --epsilon 0.25 \
   --seed 0
 
@@ -167,7 +195,7 @@ uv run llm-controllability causal-study \
   --prompt-prefix optimized_prompt \
   --activation-prefix activation_addition \
   --target-metric target_projection \
-  --max-pairs 32 \
+  --max-pairs "${CAUSAL_MAX_PAIRS}" \
   --seed 0
 
 uv run llm-controllability monitor-invariance \

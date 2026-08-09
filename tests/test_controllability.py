@@ -37,6 +37,10 @@ from llm_controllability.evaluation.control_study import (
     control_cost_rows,
     summarize_control_costs,
 )
+from llm_controllability.evaluation.discovery import (
+    scaling_diagnostic_rows,
+    scaling_replication_rows,
+)
 from llm_controllability.evaluation.jacobian_study import finite_difference_jacobians
 from llm_controllability.evaluation.matrix import _TABLES, aggregate_matrix
 from llm_controllability.evaluation.monitor_study import (
@@ -60,13 +64,27 @@ from llm_controllability.monitors import (
 from llm_controllability.optimization.contextual import ContextualTargetRunner
 from llm_controllability.optimization.epo import token_grads
 from llm_controllability.reachability import (
+    ActiveTangentExplorer,
+    CMapConfig,
+    adaptive_control_boundary,
+    boundary_survival_rows,
     control_jacobian,
+    controllability_atlas_rows,
+    controllability_boundary_rows,
+    detection_control_gap_rows,
+    directed_accessibility_rows,
+    discover_controllability_manifold,
     effective_rank,
     load_state_samples,
     local_controllability,
+    phase_transition_candidate_rows,
     principal_angles,
     save_state_samples,
+    split_half_stability_rows,
     subspace_overlap,
+    summarize_controllability_boundaries,
+    summarize_directed_accessibility,
+    summarize_split_half_stability,
     summarize_trajectories,
 )
 from llm_controllability.reachability.collection import run_and_capture
@@ -104,16 +122,13 @@ class DummyModel(torch.nn.Module):
 
 class ReplayBatch(dict):
     def to(self, device):
-        return ReplayBatch(
-            {
-                key: value.to(device)
-                for key, value in self.items()
-            }
-        )
+        return ReplayBatch({key: value.to(device) for key, value in self.items()})
 
 
 class ReplayTokenizer:
+    pad_token = "<pad>"
     pad_token_id = 0
+    eos_token = "<eos>"
     eos_token_id = 9
 
     def __call__(self, text, **kwargs):
@@ -122,6 +137,10 @@ class ReplayTokenizer:
             input_ids=values,
             attention_mask=torch.ones_like(values),
         )
+
+    @staticmethod
+    def encode(text, add_special_tokens=False):
+        return [1, 2] if text == "question" else [3, 4]
 
     @staticmethod
     def decode(ids, skip_special_tokens=True):
@@ -178,6 +197,8 @@ def make_sample(
     tags=None,
     target_projection=None,
     parameters=None,
+    control_cost=None,
+    constraint_results=None,
 ):
     metrics = {"monitor_label": label}
     if target_projection is not None:
@@ -189,19 +210,106 @@ def make_sample(
         intervention=InterventionMetadata(
             name=name or channel.value,
             channel=channel,
-            control_cost=0.0 if channel is ControlChannel.BASELINE else 1.0,
+            control_cost=(
+                0.0
+                if channel is ControlChannel.BASELINE
+                else 1.0
+                if control_cost is None
+                else control_cost
+            ),
             parameters=parameters or {},
         ),
         state=np.asarray(state, dtype=np.float32),
         prompt="p",
         output="o",
         behavior_preserved=preserved,
+        constraint_results=constraint_results or {},
         metrics=metrics,
         tags=tags or {},
     )
 
 
 class ControllabilityTests(unittest.TestCase):
+    def test_cmap_runs_live_discovery_then_held_out_evaluation(self):
+        model = ReplayModel()
+        tokenizer = ReplayTokenizer()
+        gate = BehaviorGate(
+            [
+                TaskPreservationConstraint(require_correct=True),
+                BudgetConstraint(2.0),
+            ]
+        )
+        example = {
+            "prompt": "question",
+            "answer": "answer",
+            "verifier": "exact",
+            "monitor_label": 1,
+        }
+
+        result = discover_controllability_manifold(
+            model,
+            tokenizer,
+            model_name="dummy",
+            validation_examples=[{"id": "validation", "split": "validation", **example}],
+            test_examples=[{"id": "test", "split": "test", **example}],
+            behavior_gate=gate,
+            generation={"max_new_tokens": 2},
+            config=CMapConfig(
+                layer=0,
+                direction_budget=1,
+                query_budget=2,
+                candidate_pool_size=8,
+                initial_strength=0.5,
+                maximum_strength=0.5,
+                validation_examples=1,
+                test_examples=1,
+                seed=3,
+            ),
+            target_direction=np.asarray([1.0, 0.0]),
+        )
+
+        self.assertEqual(len(result.directions), 1)
+        self.assertEqual({row["role"] for row in result.summary_rows}, {"validation", "test"})
+        self.assertEqual({row["role"] for row in result.query_rows}, {"validation", "test"})
+        self.assertTrue(all(sample.behavior_preserved for sample in result.samples))
+
+    def test_cmap_expands_unexplored_tangent_and_brackets_boundary(self):
+        config = CMapConfig(
+            layer=0,
+            direction_budget=3,
+            query_budget=16,
+            candidate_pool_size=32,
+            validation_examples=1,
+            test_examples=1,
+            seed=7,
+        )
+        explorer = ActiveTangentExplorer(4, config, seed=7)
+        first = explorer.propose()
+        self.assertIsNotNone(first)
+        first_direction, _, _ = first
+        explorer.observe(first_direction, preserved=True)
+        explorer.finish_direction(0)
+
+        second = explorer.propose()
+        self.assertIsNotNone(second)
+        second_direction, novelty, _ = second
+
+        self.assertAlmostEqual(float(np.dot(first_direction, second_direction)), 0.0, places=5)
+        self.assertGreater(novelty, 0.9)
+
+        boundary = adaptive_control_boundary(
+            lambda strength: float(strength <= 3.0),
+            initial_strength=1.0,
+            maximum_strength=8.0,
+            expansion_factor=2.0,
+            boundary_steps=2,
+            required_preservation_rate=1.0,
+            max_trials=8,
+        )
+        self.assertEqual(boundary.status, "bracketed")
+        self.assertEqual(boundary.lower, 3.0)
+        self.assertEqual(boundary.upper, 3.5)
+
     def test_matrix_aggregation_requires_and_combines_declared_artifacts(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -216,6 +324,8 @@ class ControllabilityTests(unittest.TestCase):
                                 "protocol": "full",
                                 "family": "dummy",
                                 "scale_group": "small",
+                                "parameter_count_billions": 1.0,
+                                "training_regime": "instruction",
                             }
                             for slug in ("reference", "comparison")
                         ],
@@ -243,6 +353,79 @@ class ControllabilityTests(unittest.TestCase):
                     "reach_rate": 1.0,
                     "mean_minimum_cost": 1.0,
                     "mean_control_error": 0.0,
+                },
+                "controllability_boundaries": {
+                    "channel": "activation",
+                    "family": "activation_addition",
+                    "side": "increase",
+                    "feasible_example_rate": 1.0,
+                    "bracketed_rate": 1.0,
+                    "mean_lower_control_bound": 2.0,
+                    "mean_maximum_state_displacement": 3.0,
+                },
+                "directed_accessibility": {
+                    "direction": "prompt_to_activation",
+                    "mean_normalized_gap": 0.2,
+                    "mean_coverage_rate": 0.8,
+                    "mean_directed_hausdorff_normalized": 0.4,
+                    "estimable_example_rate": 1.0,
+                    "target_empty_rate": 0.0,
+                },
+                "detection_control_gap": {
+                    "channel": "activation",
+                    "natural_oriented_projection_auc": 1.0,
+                    "control_to_detection_ratio": 0.5,
+                    "controlled_example_rate": 1.0,
+                    "low_control_fraction": 0.25,
+                },
+                "representation_control_gap": {
+                    "channel": "activation",
+                    "natural_oriented_projection_auc": 1.0,
+                    "standardized_detection_margin": 2.0,
+                    "standardized_control_margin": 0.5,
+                    "representation_control_gap": 1.5,
+                },
+                "split_half_stability": {
+                    "channel": "prompt",
+                    "mean_subspace_overlap": 1.0,
+                    "mean_effective_rank": 1.0,
+                },
+                "controllability_atlas": {
+                    "channel": "prompt",
+                    "facet": "concept",
+                    "facet_value": "test",
+                    "preservation_rate": 1.0,
+                    "controlled_example_rate": 1.0,
+                    "effective_rank": 1.0,
+                    "maximum_state_displacement": 1.0,
+                },
+                "boundary_survival": {
+                    "channel": "activation",
+                    "dose_fraction": 1.0,
+                    "preservation_rate": 0.0,
+                },
+                "phase_transition_candidates": {
+                    "channel": "activation",
+                    "family": "activation_addition",
+                    "side": "increase",
+                    "largest_preservation_drop": 1.0,
+                    "final_preservation_rate": 0.0,
+                    "sharp_boundary_candidate": 1,
+                },
+                "cmap_summary": {
+                    "role": "test",
+                    "preservation_rate": 1.0,
+                    "effective_rank": 2.0,
+                    "participation_ratio": 1.8,
+                    "maximum_state_displacement": 3.0,
+                    "mean_boundary_lower": 2.0,
+                },
+                "jacobians": {
+                    "control_dimension": 8,
+                    "rank_fraction": 1.0,
+                    "maximum_gain": 1.0,
+                    "minimum_nonzero_gain": 1.0,
+                    "squared_gain": 8.0,
                 },
                 "monitor_invariance": {
                     "monitor": "linear",
@@ -290,9 +473,124 @@ class ControllabilityTests(unittest.TestCase):
 
             self.assertTrue(manifest["complete"])
             self.assertEqual(manifest["n_models"], 2)
-            self.assertTrue(
-                (root / "aggregate" / "matched_contrasts.csv").exists()
+            self.assertTrue((root / "aggregate" / "matched_contrasts.csv").exists())
+            self.assertTrue((root / "aggregate" / "scaling_diagnostics.csv").exists())
+
+    def test_atlas_preserves_behavior_failures_in_coverage_rates(self):
+        samples = [
+            make_sample(
+                "a",
+                0,
+                ControlChannel.BASELINE,
+                [0.0, 0.0],
+                tags={"concept": "truthfulness"},
+                target_projection=0.0,
+            ),
+            make_sample(
+                "a",
+                0,
+                ControlChannel.ACTIVATION,
+                [1.0, 0.0],
+                tags={"concept": "truthfulness"},
+                target_projection=1.0,
+                preserved=True,
+            ),
+            make_sample(
+                "b",
+                0,
+                ControlChannel.BASELINE,
+                [0.0, 0.0],
+                tags={"concept": "truthfulness"},
+                target_projection=0.0,
+            ),
+            make_sample(
+                "b",
+                0,
+                ControlChannel.ACTIVATION,
+                [2.0, 0.0],
+                tags={"concept": "truthfulness"},
+                target_projection=2.0,
+                preserved=False,
+            ),
+        ]
+
+        rows = controllability_atlas_rows(samples)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["facet_value"], "truthfulness")
+        self.assertEqual(rows[0]["controlled_example_rate"], 0.5)
+        self.assertEqual(rows[0]["maximum_state_displacement"], 1.0)
+
+    def test_phase_transition_requires_a_supported_sharp_drop(self):
+        samples = []
+        for index in range(10):
+            example_id = f"e{index}"
+            samples.append(
+                make_sample(
+                    example_id,
+                    0,
+                    ControlChannel.BASELINE,
+                    [0.0, 0.0],
+                    target_projection=0.0,
+                )
             )
+            for strength in (1.0, 2.0, 4.0, 8.0):
+                samples.append(
+                    make_sample(
+                        example_id,
+                        0,
+                        ControlChannel.ACTIVATION,
+                        [strength, 0.0],
+                        name=f"activation_addition_a{strength:g}",
+                        target_projection=strength,
+                        parameters={"strength": strength},
+                        preserved=strength < 4.0,
+                    )
+                )
+
+        survival = boundary_survival_rows(samples, bootstrap_resamples=100)
+        candidates = phase_transition_candidate_rows(survival)
+
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["qualification"], "sharp_boundary_candidate")
+        self.assertEqual(candidates[0]["largest_preservation_drop"], 1.0)
+
+    def test_scaling_diagnostics_require_four_stable_scale_points(self):
+        models = []
+        summaries = []
+        for family in ("family_a", "family_b"):
+            for size in (1.0, 2.0, 4.0, 8.0):
+                slug = f"{family}_{size:g}"
+                models.append(
+                    {
+                        "slug": slug,
+                        "family": family,
+                        "training_regime": "instruction",
+                        "parameter_count_billions": size,
+                    }
+                )
+                summaries.append(
+                    {
+                        "slug": slug,
+                        "table": "geometry",
+                        "metric": "effective_rank",
+                        "channel": "activation",
+                        "mean": 2.0 * size,
+                    }
+                )
+
+        diagnostics = scaling_diagnostic_rows(summaries, models)
+        replication = scaling_replication_rows(diagnostics)
+
+        self.assertEqual(len(diagnostics), 2)
+        self.assertTrue(
+            all(
+                row["qualification"] == "within_family_scaling_candidate"
+                for row in diagnostics
+            )
+        )
+        self.assertAlmostEqual(diagnostics[0]["scaling_exponent_or_slope"], 1.0)
+        self.assertEqual(replication[0]["qualification"], "replicated_scaling_candidate")
 
     def test_behavior_gate_is_a_hard_conjunction(self):
         gate = BehaviorGate(
@@ -321,9 +619,7 @@ class ControllabilityTests(unittest.TestCase):
         self.assertIn("reference_correct=False", result.details)
 
     def test_prompt_semantic_gate_reads_prompt_embeddings(self):
-        constraint = PromptSemanticEquivalenceConstraint(
-            minimum_similarity=0.9
-        )
+        constraint = PromptSemanticEquivalenceConstraint(minimum_similarity=0.9)
         reference = BehaviorRecord(
             "answer",
             metadata={"prompt_embedding": np.array([1.0, 0.0])},
@@ -481,7 +777,7 @@ class ControllabilityTests(unittest.TestCase):
         self.assertEqual(diagnostics["generation_tracking_steps"], 1.0)
         self.assertGreater(diagnostics["generation_tracking_mae"], 0.0)
 
-    def test_adaptive_state_capture_preserves_controller_history(self):
+    def test_adaptive_state_capture_resets_generation_history_before_replay(self):
         model = ReplayModel()
         controller = AdaptiveActivationController(
             "pid",
@@ -503,7 +799,7 @@ class ControllabilityTests(unittest.TestCase):
         )
 
         self.assertEqual(execution["generation_tracking_steps"], 2.0)
-        self.assertAlmostEqual(float(states[0][0]), 7.0)
+        self.assertAlmostEqual(float(states[0][0]), 3.0)
 
     def test_mapped_prompt_intervention_uses_declared_rewrite_and_edit_cost(self):
         class Tokenizer:
@@ -560,7 +856,9 @@ class ControllabilityTests(unittest.TestCase):
         self.assertTrue(np.allclose(prompt, [[1.0, 0.0], [1.0, 0.0]]))
         self.assertEqual(effective_rank(prompt, center=False), 1.0)
         self.assertAlmostEqual(subspace_overlap(prompt, activation), 0.0, places=6)
-        self.assertTrue(any(row["channel"] == "prompt_activation_overlap" for row in rows))
+        self.assertTrue(
+            any(row["channel"] == "prompt_activation_overlap" for row in rows)
+        )
         self.assertIn("n_components", rows[0])
 
     def test_geometry_reports_target_budget_and_layer_propagation(self):
@@ -610,6 +908,205 @@ class ControllabilityTests(unittest.TestCase):
         self.assertEqual(growth_rows[0]["n_examples"], 1)
         self.assertAlmostEqual(propagation[0]["expansion_ratio"], 2.0)
 
+    def test_controllability_boundary_brackets_first_failed_control(self):
+        samples = [
+            make_sample(
+                "a",
+                0,
+                ControlChannel.BASELINE,
+                [0.0, 0.0],
+                target_projection=0.0,
+            ),
+            make_sample(
+                "a",
+                0,
+                ControlChannel.ACTIVATION,
+                [1.0, 0.0],
+                name="activation_addition_a1",
+                target_projection=1.0,
+                parameters={"strength": 1.0},
+            ),
+            make_sample(
+                "a",
+                0,
+                ControlChannel.ACTIVATION,
+                [2.0, 0.0],
+                name="activation_addition_a2",
+                target_projection=2.0,
+                parameters={"strength": 2.0},
+            ),
+            make_sample(
+                "a",
+                0,
+                ControlChannel.ACTIVATION,
+                [4.0, 0.0],
+                name="activation_addition_a4",
+                preserved=False,
+                target_projection=4.0,
+                parameters={"strength": 4.0},
+                constraint_results={"task": False, "control_budget": True},
+            ),
+        ]
+
+        rows = controllability_boundary_rows(samples)
+        summaries = summarize_controllability_boundaries(
+            rows,
+            bootstrap_resamples=20,
+        )
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["boundary_status"], "bracketed")
+        self.assertEqual(rows[0]["lower_control_bound"], 2.0)
+        self.assertEqual(rows[0]["upper_control_bound"], 4.0)
+        self.assertEqual(rows[0]["binding_constraints"], "task")
+        self.assertEqual(summaries[0]["bracketed_rate"], 1.0)
+
+    def test_prompt_boundary_is_labeled_sample_limited(self):
+        samples = [
+            make_sample(
+                "a",
+                0,
+                ControlChannel.BASELINE,
+                [0.0],
+                target_projection=0.0,
+            ),
+            make_sample(
+                "a",
+                0,
+                ControlChannel.PROMPT,
+                [1.0],
+                name="optimized_prompt_0000",
+                target_projection=1.0,
+                control_cost=8.0,
+            ),
+        ]
+
+        rows = controllability_boundary_rows(samples)
+
+        self.assertEqual(rows[0]["ordered_control"], 0)
+        self.assertEqual(rows[0]["boundary_status"], "sample_limited")
+
+    def test_directed_accessibility_detects_channel_mismatch(self):
+        aligned = [
+            make_sample(
+                "aligned",
+                0,
+                ControlChannel.BASELINE,
+                [0.0, 0.0],
+            ),
+            make_sample("aligned", 0, ControlChannel.PROMPT, [1.0, 0.0], name="p1"),
+            make_sample("aligned", 0, ControlChannel.PROMPT, [2.0, 0.0], name="p2"),
+            make_sample("aligned", 0, ControlChannel.ACTIVATION, [1.0, 0.0], name="a1"),
+            make_sample("aligned", 0, ControlChannel.ACTIVATION, [2.0, 0.0], name="a2"),
+        ]
+        mismatched = [
+            make_sample(
+                "mismatched",
+                0,
+                ControlChannel.BASELINE,
+                [0.0, 0.0],
+            ),
+            make_sample("mismatched", 0, ControlChannel.PROMPT, [1.0, 0.0], name="p1"),
+            make_sample("mismatched", 0, ControlChannel.PROMPT, [2.0, 0.0], name="p2"),
+            make_sample(
+                "mismatched", 0, ControlChannel.ACTIVATION, [0.0, 1.0], name="a1"
+            ),
+            make_sample(
+                "mismatched", 0, ControlChannel.ACTIVATION, [0.0, 2.0], name="a2"
+            ),
+        ]
+
+        rows = directed_accessibility_rows(aligned + mismatched, subsample_repeats=8)
+        by_example = {(row["example_id"], row["direction"]): row for row in rows}
+        summaries = summarize_directed_accessibility(
+            rows,
+            bootstrap_resamples=20,
+        )
+
+        self.assertEqual(
+            by_example[("aligned", "prompt_to_activation")]["mean_normalized_gap"],
+            0.0,
+        )
+        self.assertGreater(
+            by_example[("mismatched", "prompt_to_activation")]["mean_normalized_gap"],
+            0.5,
+        )
+        self.assertEqual(len(summaries), 2)
+
+    def test_detection_control_gap_separates_probe_signal_from_movement(self):
+        samples = [
+            make_sample(
+                "negative",
+                0,
+                ControlChannel.BASELINE,
+                [0.0],
+                label=0.0,
+                target_projection=0.0,
+            ),
+            make_sample(
+                "positive",
+                0,
+                ControlChannel.BASELINE,
+                [2.0],
+                label=1.0,
+                target_projection=2.0,
+            ),
+            make_sample(
+                "negative",
+                0,
+                ControlChannel.PROMPT,
+                [0.1],
+                target_projection=0.1,
+            ),
+            make_sample(
+                "positive",
+                0,
+                ControlChannel.PROMPT,
+                [2.1],
+                preserved=False,
+                target_projection=2.1,
+            ),
+        ]
+
+        rows = detection_control_gap_rows(samples)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["natural_oriented_projection_auc"], 1.0)
+        self.assertAlmostEqual(rows[0]["control_to_detection_ratio"], 0.025)
+        self.assertEqual(rows[0]["controlled_example_rate"], 0.5)
+        self.assertEqual(rows[0]["low_control_fraction"], 1.0)
+
+    def test_directed_accessibility_keeps_empty_target_failures(self):
+        samples = [
+            make_sample("a", 0, ControlChannel.BASELINE, [0.0, 0.0]),
+            make_sample("a", 0, ControlChannel.PROMPT, [1.0, 0.0]),
+            make_sample(
+                "a",
+                0,
+                ControlChannel.ACTIVATION,
+                [0.0, 1.0],
+                preserved=False,
+            ),
+        ]
+
+        rows = directed_accessibility_rows(samples)
+        prompt_to_activation = next(
+            row for row in rows if row["direction"] == "prompt_to_activation"
+        )
+        summary = summarize_directed_accessibility(
+            rows,
+            bootstrap_resamples=20,
+        )
+
+        self.assertEqual(prompt_to_activation["status"], "target_empty")
+        self.assertEqual(prompt_to_activation["coverage_rate"], 0.0)
+        self.assertEqual(
+            next(row for row in summary if row["direction"] == "prompt_to_activation")[
+                "estimable_example_rate"
+            ],
+            0.0,
+        )
+
     def test_trajectory_summary_uses_ordered_control_values(self):
         samples = [
             make_sample(
@@ -633,6 +1130,34 @@ class ControllabilityTests(unittest.TestCase):
         second = np.array([[3.0, 0.0], [-1.0, 0.0]])
         angles = principal_angles(first, second)
         self.assertTrue(np.allclose(angles, 0.0))
+
+    def test_split_half_stability_uses_disjoint_example_groups(self):
+        samples = []
+        for index in range(4):
+            example_id = str(index)
+            samples.extend(
+                [
+                    make_sample(
+                        example_id,
+                        0,
+                        ControlChannel.BASELINE,
+                        [0.0, 0.0],
+                    ),
+                    make_sample(
+                        example_id,
+                        0,
+                        ControlChannel.PROMPT,
+                        [float(index + 1), 0.0],
+                    ),
+                ]
+            )
+
+        rows = split_half_stability_rows(samples, repeats=5, seed=0)
+        summary = summarize_split_half_stability(rows)
+
+        self.assertEqual(len(rows), 5)
+        self.assertEqual(summary[0]["mean_subspace_overlap"], 1.0)
+        self.assertEqual(summary[0]["n_examples_per_half"], 2)
 
     def test_local_jacobian_rank_recovers_independent_controls(self):
         jacobian = control_jacobian(
@@ -718,9 +1243,7 @@ class ControllabilityTests(unittest.TestCase):
         with AttentionHeadAblation(block, head=0).apply():
             output = block(hidden)
 
-        self.assertTrue(
-            torch.equal(output, torch.tensor([[[0.0, 3.0]]]))
-        )
+        self.assertTrue(torch.equal(output, torch.tensor([[[0.0, 3.0]]])))
 
     def test_monitor_invariance_reports_worst_case_failure(self):
         samples = [
@@ -827,9 +1350,7 @@ class ControllabilityTests(unittest.TestCase):
             permutations=100,
         )
         consistency = next(
-            row
-            for row in comparisons
-            if row["metric"] == "worst_case_consistency"
+            row for row in comparisons if row["metric"] == "worst_case_consistency"
         )
 
         self.assertEqual(consistency["augmented_minus_natural"], 1.0)
@@ -842,15 +1363,23 @@ class ControllabilityTests(unittest.TestCase):
         self.assertTrue(np.array_equal(predictions, labels.astype(bool)))
 
         ood = MahalanobisOODMonitor().fit(np.array([[0.0], [0.1], [-0.1]]))
-        self.assertGreater(ood.score(np.array([[3.0]]))[0], ood.score(np.array([[0.0]]))[0])
+        self.assertGreater(
+            ood.score(np.array([[3.0]]))[0], ood.score(np.array([[0.0]]))[0]
+        )
 
         hidden = np.array([[[1.0], [2.0]], [[3.0], [100.0]]])
         mask = np.array([[1, 1], [1, 0]])
-        self.assertTrue(np.array_equal(pool_hidden_states(hidden, mask=mask, pooling="last"), [[2.0], [3.0]]))
+        self.assertTrue(
+            np.array_equal(
+                pool_hidden_states(hidden, mask=mask, pooling="last"), [[2.0], [3.0]]
+            )
+        )
 
     def test_trajectory_similarity_distinguishes_routes(self):
         same = trajectory_similarity([[1.0, 0.0], [0.0, 1.0]], [[1.0, 0.0], [0.0, 1.0]])
-        different = trajectory_similarity([[1.0, 0.0], [0.0, 1.0]], [[0.0, 1.0], [1.0, 0.0]])
+        different = trajectory_similarity(
+            [[1.0, 0.0], [0.0, 1.0]], [[0.0, 1.0], [1.0, 0.0]]
+        )
         self.assertAlmostEqual(same["route_cosine"], 1.0)
         self.assertAlmostEqual(different["route_cosine"], 0.0)
 

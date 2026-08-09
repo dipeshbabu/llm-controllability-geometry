@@ -41,15 +41,34 @@ from llm_controllability.models.runtime import (
     model_runtime_config,
     runtime_capabilities,
 )
+from llm_controllability.reachability.boundaries import (
+    controllability_boundary_rows,
+    detection_control_gap_rows,
+    directed_accessibility_rows,
+    representation_control_gap_rows,
+    summarize_controllability_boundaries,
+    summarize_directed_accessibility,
+)
+from llm_controllability.reachability.cmap import (
+    CMapConfig,
+    discover_controllability_manifold,
+)
 from llm_controllability.reachability.collection import (
     collect_reachable_states,
     load_examples,
+)
+from llm_controllability.reachability.discovery import (
+    boundary_survival_rows,
+    controllability_atlas_rows,
+    phase_transition_candidate_rows,
 )
 from llm_controllability.reachability.geometry import (
     budget_growth,
     layerwise_propagation,
     principal_angle_rows,
+    split_half_stability_rows,
     summarize_reachability,
+    summarize_split_half_stability,
     summarize_trajectories,
     target_orthogonal_decomposition,
 )
@@ -67,7 +86,11 @@ def _load_direction(config: Mapping[str, Any], base_dir: Path) -> torch.Tensor:
         values = np.load(path)
     else:
         loaded = torch.load(path, map_location="cpu", weights_only=True)
-        values = loaded.detach().cpu().numpy() if isinstance(loaded, torch.Tensor) else loaded
+        values = (
+            loaded.detach().cpu().numpy()
+            if isinstance(loaded, torch.Tensor)
+            else loaded
+        )
     return torch.as_tensor(values, dtype=torch.float32).reshape(-1)
 
 
@@ -167,9 +190,7 @@ def build_interventions(
         elif kind == "adaptive":
             direction = _load_direction(config, base_dir)
             setpoints = (
-                config["setpoints"]
-                if "setpoints" in config
-                else [config["setpoint"]]
+                config["setpoints"] if "setpoints" in config else [config["setpoint"]]
             )
             for setpoint in setpoints:
                 interventions.append(
@@ -190,12 +211,18 @@ def build_interventions(
                     )
                 )
         elif kind == "hybrid":
-            prompt_parts = build_interventions([config["prompt"]], base_dir=base_dir)[1:]
-            activation_parts = build_interventions([config["activation"]], base_dir=base_dir)[1:]
+            prompt_parts = build_interventions([config["prompt"]], base_dir=base_dir)[
+                1:
+            ]
+            activation_parts = build_interventions(
+                [config["activation"]], base_dir=base_dir
+            )[1:]
             for prompt_part in prompt_parts:
                 for activation_part in activation_parts:
                     if not isinstance(prompt_part, PromptIntervention):
-                        raise TypeError("hybrid prompt component must have type 'prompt'")
+                        raise TypeError(
+                            "hybrid prompt component must have type 'prompt'"
+                        )
                     interventions.append(
                         HybridIntervention(
                             name=f"{name}_{prompt_part.name}_{activation_part.name}",
@@ -225,7 +252,9 @@ def build_behavior_gate(config: Mapping[str, Any]) -> BehaviorGate:
     semantic = config.get("semantic")
     if semantic is not None:
         constraints.append(
-            SemanticEquivalenceConstraint(float(semantic.get("minimum_similarity", 0.85)))
+            SemanticEquivalenceConstraint(
+                float(semantic.get("minimum_similarity", 0.85))
+            )
         )
         if bool(semantic.get("check_prompt", True)):
             constraints.append(
@@ -250,7 +279,9 @@ def build_behavior_gate(config: Mapping[str, Any]) -> BehaviorGate:
     if budget is not None:
         constraints.append(BudgetConstraint(float(budget["maximum_cost"])))
     if not constraints:
-        raise ValueError("at least one behavior or budget constraint must be configured")
+        raise ValueError(
+            "at least one behavior or budget constraint must be configured"
+        )
     return BehaviorGate(constraints)
 
 
@@ -275,8 +306,7 @@ def _limit_examples(
     if limit is None or len(examples) <= limit:
         return examples
     if not all(
-        example.get("split") in {"train", "validation", "test"}
-        for example in examples
+        example.get("split") in {"train", "validation", "test"} for example in examples
     ):
         return examples[:limit]
 
@@ -295,14 +325,10 @@ def _limit_examples(
         by_split[split] = [grouped[group] for group in order]
 
     split_counts = {
-        split: sum(len(group) for group in groups)
-        for split, groups in by_split.items()
+        split: sum(len(group) for group in groups) for split, groups in by_split.items()
     }
     total = sum(split_counts.values())
-    raw = {
-        split: limit * count / total
-        for split, count in split_counts.items()
-    }
+    raw = {split: limit * count / total for split, count in split_counts.items()}
     quotas = {split: int(value) for split, value in raw.items()}
     for split in sorted(
         raw,
@@ -354,9 +380,7 @@ def _runtime_metadata(
         "model_dtype": str(model_dtype(model)).removeprefix("torch."),
         "accelerator": runtime_capabilities(),
         "model_revision": getattr(config, "_commit_hash", None),
-        "tokenizer_revision": getattr(tokenizer, "init_kwargs", {}).get(
-            "_commit_hash"
-        ),
+        "tokenizer_revision": getattr(tokenizer, "init_kwargs", {}).get("_commit_hash"),
         "repository_commit": repository_commit,
         "uv_lock_sha256": (
             hashlib.sha256(lock_path.read_bytes()).hexdigest()
@@ -406,11 +430,7 @@ def run_study(spec_path: str | Path, out_dir: str | Path) -> dict[str, Any]:
     examples = load_examples(_resolve(spec["data"]["path"], base_dir))
     examples = _limit_examples(
         examples,
-        (
-            int(spec["data"]["limit"])
-            if spec["data"].get("limit") is not None
-            else None
-        ),
+        (int(spec["data"]["limit"]) if spec["data"].get("limit") is not None else None),
     )
     interventions = build_interventions(spec["interventions"], base_dir=base_dir)
     gate = build_behavior_gate(spec["constraints"])
@@ -475,6 +495,92 @@ def run_study(spec_path: str | Path, out_dir: str | Path) -> dict[str, Any]:
         principal_angle_rows(analysis_samples),
         out_dir / "principal_angles.csv",
     )
+    split_half = split_half_stability_rows(analysis_samples)
+    _write_csv(split_half, out_dir / "split_half_stability.csv")
+    _write_csv(
+        summarize_split_half_stability(split_half),
+        out_dir / "split_half_stability_summary.csv",
+    )
+    boundaries = controllability_boundary_rows(analysis_samples)
+    _write_csv(boundaries, out_dir / "controllability_boundaries.csv")
+    _write_csv(
+        summarize_controllability_boundaries(boundaries),
+        out_dir / "controllability_boundary_summary.csv",
+    )
+    accessibility = directed_accessibility_rows(analysis_samples)
+    _write_csv(accessibility, out_dir / "directed_accessibility.csv")
+    _write_csv(
+        summarize_directed_accessibility(accessibility),
+        out_dir / "directed_accessibility_summary.csv",
+    )
+    _write_csv(
+        detection_control_gap_rows(analysis_samples),
+        out_dir / "detection_control_gap.csv",
+    )
+    _write_csv(
+        representation_control_gap_rows(analysis_samples),
+        out_dir / "representation_control_gap.csv",
+    )
+    _write_csv(
+        controllability_atlas_rows(analysis_samples),
+        out_dir / "controllability_atlas.csv",
+    )
+    boundary_survival = boundary_survival_rows(analysis_samples)
+    _write_csv(boundary_survival, out_dir / "boundary_survival.csv")
+    _write_csv(
+        phase_transition_candidate_rows(boundary_survival),
+        out_dir / "phase_transition_candidates.csv",
+    )
+    cmap_artifacts: list[str] = []
+    cmap_manifest: dict[str, Any] | None = None
+    cmap_values = spec.get("cmap")
+    if cmap_values is not None and bool(cmap_values.get("enabled", False)):
+        cmap_config = CMapConfig.from_mapping(cmap_values)
+        validation_examples = [
+            example for example in examples if example.get("split") == "validation"
+        ]
+        test_examples = [
+            example for example in examples if example.get("split") == "test"
+        ]
+        cmap_result = discover_controllability_manifold(
+            model,
+            tokenizer,
+            model_name=model_config["name"],
+            validation_examples=validation_examples,
+            test_examples=test_examples,
+            behavior_gate=gate,
+            generation=spec.get("generation", {}),
+            config=cmap_config,
+            max_length=int(spec.get("max_length", 2048)),
+            semantic_embedder=semantic_embedder,
+            target_direction=target_directions.get(cmap_config.layer),
+        )
+        save_state_samples(cmap_result.samples, out_dir / "cmap")
+        np.savez_compressed(
+            out_dir / "cmap_directions.npz",
+            **cmap_result.directions,
+        )
+        _write_csv(cmap_result.query_rows, out_dir / "cmap_queries.csv")
+        _write_csv(cmap_result.direction_rows, out_dir / "cmap_directions.csv")
+        _write_csv(cmap_result.summary_rows, out_dir / "cmap_summary.csv")
+        cmap_artifacts = [
+            "cmap/states.npz",
+            "cmap/samples.jsonl",
+            "cmap_directions.npz",
+            "cmap_queries.csv",
+            "cmap_directions.csv",
+            "cmap_summary.csv",
+        ]
+        cmap_manifest = {
+            "config": {
+                key: value
+                for key, value in cmap_values.items()
+                if key != "enabled"
+            },
+            "n_state_samples": len(cmap_result.samples),
+            "n_queries": len(cmap_result.query_rows),
+            "n_discovered_directions": len(cmap_result.directions),
+        }
     manifest = {
         "spec": str(spec_path),
         "model": model_config["name"],
@@ -485,6 +591,7 @@ def run_study(spec_path: str | Path, out_dir: str | Path) -> dict[str, Any]:
         "n_behavior_preserved": sum(sample.behavior_preserved for sample in samples),
         "analysis_split": "test" if "test" in split_values else "all",
         "n_analysis_samples": len(analysis_samples),
+        "cmap": cmap_manifest,
         "runtime": _runtime_metadata(model, tokenizer),
         "artifacts": [
             "states.npz",
@@ -495,6 +602,18 @@ def run_study(spec_path: str | Path, out_dir: str | Path) -> dict[str, Any]:
             "budget_growth.csv",
             "layer_propagation.csv",
             "principal_angles.csv",
+            "split_half_stability.csv",
+            "split_half_stability_summary.csv",
+            "controllability_boundaries.csv",
+            "controllability_boundary_summary.csv",
+            "directed_accessibility.csv",
+            "directed_accessibility_summary.csv",
+            "detection_control_gap.csv",
+            "representation_control_gap.csv",
+            "controllability_atlas.csv",
+            "boundary_survival.csv",
+            "phase_transition_candidates.csv",
+            *cmap_artifacts,
         ],
     }
     if analysis_samples is not samples:

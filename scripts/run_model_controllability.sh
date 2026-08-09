@@ -10,24 +10,44 @@ PROTOCOL=${5:-full}
 
 DATA_ROOT=${DATA_ROOT:-data/frontier}
 RUN_ROOT=${RUN_ROOT:-runs/controllability}
-SEEDS=${SEEDS:-"0 1 2 3 4"}
-CONTEXT_COUNT=${CONTEXT_COUNT:-16}
-EXAMPLE_LIMIT=${EXAMPLE_LIMIT:-512}
-
-if [[ -z "${BATCH_SIZE:-}" ]]; then
-  case "${MODEL_NAME}" in
-    google/gemma-3-12b-*|google/gemma-4-12B*|microsoft/phi-4|microsoft/Phi-4-reasoning*)
-      BATCH_SIZE=1
-      ;;
-    Qwen/Qwen3-8B)
-      BATCH_SIZE=2
-      ;;
-    *)
-      BATCH_SIZE=4
-      ;;
-  esac
+HOST_IS_DARWIN=0
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  HOST_IS_DARWIN=1
 fi
-DIRECTION_BATCH_SIZE=${DIRECTION_BATCH_SIZE:-${BATCH_SIZE}}
+if [[ -z "${BATCH_SIZE:-}" ]]; then
+  if [[ "${HOST_IS_DARWIN}" -eq 1 ]]; then
+    case "${MODEL_NAME}" in
+      google/gemma-3-12b-*|Qwen/Qwen3-8B)
+        BATCH_SIZE=1
+        ;;
+      google/gemma-3-4b-*|microsoft/Phi-4-mini-instruct|Qwen/Qwen3-4B)
+        BATCH_SIZE=2
+        ;;
+      *)
+        BATCH_SIZE=4
+        ;;
+    esac
+  else
+    case "${MODEL_NAME}" in
+      google/gemma-3-12b-*)
+        BATCH_SIZE=1
+        ;;
+      Qwen/Qwen3-8B)
+        BATCH_SIZE=2
+        ;;
+      *)
+        BATCH_SIZE=4
+        ;;
+    esac
+  fi
+fi
+if [[ -z "${DIRECTION_BATCH_SIZE:-}" ]]; then
+  if [[ "${HOST_IS_DARWIN}" -eq 1 && "${MODEL_NAME}" == "Qwen/Qwen3-8B" ]]; then
+    DIRECTION_BATCH_SIZE=2
+  else
+    DIRECTION_BATCH_SIZE=${BATCH_SIZE}
+  fi
+fi
 MAX_CONTEXT_LENGTH=${MAX_CONTEXT_LENGTH:-768}
 MODEL_REVISION=${MODEL_REVISION:-}
 DEVICE_MAP=${DEVICE_MAP:-auto}
@@ -36,15 +56,47 @@ MONITOR_DEVICE=${MONITOR_DEVICE:-auto}
 case "${PROTOCOL}" in
   full)
     METHODS=${METHODS:-"epo gcg random random_search minscan"}
+    DEFAULT_SEEDS="0 1 2 3 4"
+    DEFAULT_CONTEXT_COUNT=16
+    DEFAULT_EXAMPLE_LIMIT=512
+    DEFAULT_CMAP_DIRECTIONS=8
+    DEFAULT_CMAP_QUERY_BUDGET=512
+    DEFAULT_CMAP_VALIDATION_EXAMPLES=8
+    DEFAULT_CMAP_TEST_EXAMPLES=16
     ;;
   matched)
     METHODS=${METHODS:-"epo gcg"}
+    DEFAULT_SEEDS="0 1 2 3 4"
+    DEFAULT_CONTEXT_COUNT=16
+    DEFAULT_EXAMPLE_LIMIT=512
+    DEFAULT_CMAP_DIRECTIONS=8
+    DEFAULT_CMAP_QUERY_BUDGET=512
+    DEFAULT_CMAP_VALIDATION_EXAMPLES=8
+    DEFAULT_CMAP_TEST_EXAMPLES=16
+    ;;
+  scaling)
+    METHODS=${METHODS:-"epo gcg"}
+    DEFAULT_SEEDS="0 1 2"
+    DEFAULT_CONTEXT_COUNT=8
+    DEFAULT_EXAMPLE_LIMIT=128
+    DEFAULT_CMAP_DIRECTIONS=4
+    DEFAULT_CMAP_QUERY_BUDGET=192
+    DEFAULT_CMAP_VALIDATION_EXAMPLES=4
+    DEFAULT_CMAP_TEST_EXAMPLES=8
     ;;
   *)
-    echo "PROTOCOL must be 'full' or 'matched'" >&2
+    echo "PROTOCOL must be 'full', 'matched', or 'scaling'" >&2
     exit 2
     ;;
 esac
+
+SEEDS=${SEEDS:-${DEFAULT_SEEDS}}
+CONTEXT_COUNT=${CONTEXT_COUNT:-${DEFAULT_CONTEXT_COUNT}}
+EXAMPLE_LIMIT=${EXAMPLE_LIMIT:-${DEFAULT_EXAMPLE_LIMIT}}
+CMAP_DIRECTIONS=${CMAP_DIRECTIONS:-${DEFAULT_CMAP_DIRECTIONS}}
+CMAP_QUERY_BUDGET=${CMAP_QUERY_BUDGET:-${DEFAULT_CMAP_QUERY_BUDGET}}
+CMAP_VALIDATION_EXAMPLES=${CMAP_VALIDATION_EXAMPLES:-${DEFAULT_CMAP_VALIDATION_EXAMPLES}}
+CMAP_TEST_EXAMPLES=${CMAP_TEST_EXAMPLES:-${DEFAULT_CMAP_TEST_EXAMPLES}}
 
 read -r -a METHOD_ARGS <<< "${METHODS}"
 read -r -a SEED_ARGS <<< "${SEEDS}"
@@ -127,7 +179,11 @@ uv run llm-controllability build-study-spec \
   --semantic-model sentence-transformers/all-mpnet-base-v2 \
   --minimum-semantic-similarity 0.80 \
   --maximum-quality-drop 0.75 \
-  --maximum-control-cost 64
+  --maximum-control-cost 64 \
+  --cmap-directions "${CMAP_DIRECTIONS}" \
+  --cmap-query-budget "${CMAP_QUERY_BUDGET}" \
+  --cmap-validation-examples "${CMAP_VALIDATION_EXAMPLES}" \
+  --cmap-test-examples "${CMAP_TEST_EXAMPLES}"
 
 uv run llm-controllability collect-reachable \
   --spec "${STUDY_SPEC}" \
@@ -145,6 +201,7 @@ uv run llm-controllability analyze-jacobians \
   --out "${RUN_ROOT}/${SLUG}/jacobians.csv" \
   --example-limit 16 \
   --epsilon 0.25 \
+  --basis-dimensions 8 16 32 \
   --seed 0
 
 uv run llm-controllability analyze-transfer \

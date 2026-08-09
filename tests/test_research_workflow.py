@@ -276,6 +276,8 @@ class ResearchWorkflowTests(unittest.TestCase):
                 capture_layers=None,
                 prompt_controls_path=prompts,
                 natural_controls_path=natural,
+                cmap_direction_budget=6,
+                cmap_query_budget=120,
             )
 
             activation = next(
@@ -299,6 +301,9 @@ class ResearchWorkflowTests(unittest.TestCase):
         self.assertEqual(activation["layer"], 1)
         self.assertEqual(random_control["channel"], "random")
         self.assertEqual(surface_control["type"], "mapped_prompt")
+        self.assertEqual(spec["cmap"]["direction_budget"], 6)
+        self.assertEqual(spec["cmap"]["query_budget"], 120)
+        self.assertEqual(spec["cmap"]["layer"], 1)
         self.assertAlmostEqual(float(random_vector[1]), 0.0, places=6)
 
     def test_robustness_summary(self):

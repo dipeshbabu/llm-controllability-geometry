@@ -151,7 +151,20 @@ def build_study_spec(
     device_map: str = "auto",
     attn_implementation: str | None = None,
     revision: str | None = None,
-    strengths: Sequence[float] = (-4.0, -2.0, -1.0, 1.0, 2.0, 4.0),
+    strengths: Sequence[float] = (
+        -16.0,
+        -8.0,
+        -4.0,
+        -2.0,
+        -1.0,
+        -0.5,
+        0.5,
+        1.0,
+        2.0,
+        4.0,
+        8.0,
+        16.0,
+    ),
     ablation_fractions: Sequence[float] = (0.25, 0.5, 0.75, 1.0),
     max_new_tokens: int = 128,
     maximum_quality_drop: float = 0.75,
@@ -159,6 +172,10 @@ def build_study_spec(
     semantic_model: str | None = None,
     minimum_semantic_similarity: float = 0.80,
     store_token_states: bool = False,
+    cmap_direction_budget: int = 0,
+    cmap_query_budget: int = 512,
+    cmap_validation_examples: int = 8,
+    cmap_test_examples: int = 16,
     seed: int = 0,
 ) -> dict:
     out_path = Path(out_path)
@@ -166,9 +183,7 @@ def build_study_spec(
     if revision is None:
         manifest_path = sweep_path.parent / "direction_manifest.json"
         if manifest_path.exists():
-            direction_manifest = json.loads(
-                manifest_path.read_text(encoding="utf-8")
-            )
+            direction_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             revision = direction_manifest.get("resolved_revision")
     with sweep_path.open("r", encoding="utf-8", newline="") as handle:
         sweep_rows = list(csv.DictReader(handle))
@@ -176,10 +191,7 @@ def build_study_spec(
         raise ValueError("direction sweep is empty")
     metric = (
         "eval_projection_gap"
-        if all(
-            row.get("eval_projection_gap") not in (None, "")
-            for row in sweep_rows
-        )
+        if all(row.get("eval_projection_gap") not in (None, "") for row in sweep_rows)
         else "projection_gap"
     )
     best = max(
@@ -214,11 +226,7 @@ def build_study_spec(
     lower = min(a_mean, b_mean)
     upper = max(a_mean, b_mean)
     span = max(upper - lower, 1e-6)
-    setpoints = np.linspace(
-        lower - 0.25 * span,
-        upper + 0.25 * span,
-        num=7,
-    ).tolist()
+    setpoints = np.linspace(lower - span, upper + span, num=9).tolist()
     direction_value = _path_for_spec(direction_path, out_path)
     random_value = _path_for_spec(random_path, out_path)
     prompt_value = _path_for_spec(Path(prompt_controls_path), out_path)
@@ -335,6 +343,29 @@ def build_study_spec(
         ],
         "seed": seed,
     }
+    if cmap_direction_budget > 0:
+        spec["cmap"] = {
+            "enabled": True,
+            "layer": layer,
+            "direction_budget": cmap_direction_budget,
+            "query_budget": cmap_query_budget,
+            "validation_examples": cmap_validation_examples,
+            "test_examples": cmap_test_examples,
+            "candidate_pool_size": 64,
+            "initial_strength": 0.5,
+            "maximum_strength": min(
+                maximum_control_cost,
+                max(abs(float(value)) for value in strengths),
+            ),
+            "expansion_factor": 2.0,
+            "boundary_steps": 3,
+            "required_preservation_rate": 0.75,
+            "rank_tolerance": 1e-4,
+            "minimum_novelty": 0.05,
+            "stagnation_patience": 2,
+            "token_scope": "last",
+            "seed": seed,
+        }
     if semantic_model is not None:
         spec["constraints"]["semantic"] = {
             "model_name": semantic_model,

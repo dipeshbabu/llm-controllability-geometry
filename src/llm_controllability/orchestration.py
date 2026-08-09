@@ -119,5 +119,6 @@ def run_declared_matrix(
         run_root = Path(os.environ.get("RUN_ROOT", "runs/controllability"))
         if not run_root.is_absolute():
             run_root = root / run_root
-        aggregate_matrix(run_root, matrix_path, run_root / "matrix")
+        aggregate_subdir = str(matrix.get("aggregate_subdir", "matrix"))
+        aggregate_matrix(run_root, matrix_path, run_root / aggregate_subdir)
     return commands

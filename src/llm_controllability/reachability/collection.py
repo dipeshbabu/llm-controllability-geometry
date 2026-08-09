@@ -121,6 +121,7 @@ def run_and_capture(
     handles = []
     with intervention.apply(model):
         for layer in layers:
+
             def hook(module, inputs, block_output, layer=layer):
                 captured[layer] = _hidden_from_output(block_output)
 
@@ -130,6 +131,10 @@ def run_and_capture(
                 generated = model.generate(**prompt_tokens, **generation_kwargs)
                 generation_diagnostics = intervention.diagnostics()
                 generation_control_cost = intervention.control_cost(tokenizer)
+                # Recapture from the controller's declared initial state. Carrying
+                # feedback history from generation into a full-sequence replay
+                # would create a state that occurred in neither execution.
+                intervention.reset()
                 full_mask = torch.ones_like(generated, dtype=torch.long)
                 model(input_ids=generated, attention_mask=full_mask)
         finally:
@@ -178,15 +183,13 @@ def capture_residual_states(
         output,
         max_length=max_length,
     )
-    tokens = {
-        key: value.to(model_device(model))
-        for key, value in tokens.items()
-    }
+    tokens = {key: value.to(model_device(model)) for key, value in tokens.items()}
     captured: dict[int, torch.Tensor] = {}
     handles = []
     intervention.reset()
     with intervention.apply(model):
         for layer in layers:
+
             def hook(module, inputs, block_output, layer=layer):
                 captured[layer] = _hidden_from_output(block_output)
 
@@ -207,7 +210,9 @@ def capture_residual_states(
                 pooled = hidden[:, -1]
             else:
                 index = last_nonpadding_indices(mask)
-                pooled = hidden[torch.arange(hidden.shape[0], device=hidden.device), index]
+                pooled = hidden[
+                    torch.arange(hidden.shape[0], device=hidden.device), index
+                ]
         elif pooling == "mean":
             if mask is None:
                 pooled = hidden.mean(dim=1)
@@ -219,7 +224,11 @@ def capture_residual_states(
                 pooled = hidden.max(dim=1).values
             else:
                 invalid = ~mask.bool().unsqueeze(-1)
-                pooled = hidden.masked_fill(invalid, torch.finfo(hidden.dtype).min).max(dim=1).values
+                pooled = (
+                    hidden.masked_fill(invalid, torch.finfo(hidden.dtype).min)
+                    .max(dim=1)
+                    .values
+                )
         else:
             raise ValueError(f"unknown pooling method: {pooling}")
         result[layer] = pooled[0].detach().float().cpu().numpy()
@@ -230,7 +239,9 @@ def _quality_score(model, tokenizer, prompt: str, output: str) -> float | None:
     if not output:
         return None
     try:
-        return float(continuation_logprob(model, tokenizer, prompt, output)["avg_logprob"])
+        return float(
+            continuation_logprob(model, tokenizer, prompt, output)["avg_logprob"]
+        )
     except ValueError:
         return None
 
@@ -370,7 +381,9 @@ def collect_reachable_states(
                 if "monitor_label" in example:
                     metrics["monitor_label"] = float(example["monitor_label"])
                 if layer in target_directions:
-                    direction = np.asarray(target_directions[layer], dtype=np.float64).reshape(-1)
+                    direction = np.asarray(
+                        target_directions[layer], dtype=np.float64
+                    ).reshape(-1)
                     direction /= max(np.linalg.norm(direction), 1e-12)
                     metrics["target_projection"] = float(np.dot(state, direction))
                 metrics.update(
@@ -387,7 +400,9 @@ def collect_reachable_states(
                         layer=layer,
                         intervention=metadata,
                         state=state,
-                        token_states=token_states[layer] if store_token_states else None,
+                        token_states=token_states[layer]
+                        if store_token_states
+                        else None,
                         prompt=prepared_prompt,
                         output=output,
                         behavior_preserved=preserved,

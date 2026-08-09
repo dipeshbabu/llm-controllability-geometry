@@ -93,37 +93,29 @@ Do not commit `data/frontier`.
 
 ## 3. Model matrix
 
-The matrix has two tiers. Five checkpoints receive the complete protocol:
+Five checkpoints receive the complete protocol. Qwen 3 8B is the deep causal
+anchor, while Gemma 3 12B is the single larger validation point:
 
 | Role | Hugging Face checkpoint | Slug |
 | --- | --- | --- |
-| Small Gemma anchor | `google/gemma-3-4b-it` | `gemma3_4b_it` |
-| Mid scale Gemma anchor | `google/gemma-3-12b-it` | `gemma3_12b_it` |
-| Gemma generation comparison | `google/gemma-4-12B-it` | `gemma4_12b_it` |
-| Small cross family replication | `microsoft/Phi-4-mini-instruct` | `phi4_mini_instruct` |
-| Mid scale cross family replication | `microsoft/phi-4` | `phi4` |
+| Cross family check | `google/gemma-3-4b-it` | `gemma3_4b_it` |
+| Larger validation | `google/gemma-3-12b-it` | `gemma3_12b_it` |
+| Cross family check | `microsoft/Phi-4-mini-instruct` | `phi4_mini_instruct` |
+| Qwen scale anchor | `Qwen/Qwen3-4B` | `qwen3_4b` |
+| Deep causal anchor | `Qwen/Qwen3-8B` | `qwen3_8b` |
 
-Four more checkpoints complete the matched post training comparisons:
-
-| Comparison | Hugging Face checkpoint | Slug |
-| --- | --- | --- |
-| Gemma 3 4B PT versus IT | `google/gemma-3-4b-pt` | `gemma3_4b_pt` |
-| Gemma 3 12B PT versus IT | `google/gemma-3-12b-pt` | `gemma3_12b_pt` |
-| Gemma 4 12B PT versus IT | `google/gemma-4-12B` | `gemma4_12b_pt` |
-| Phi 4 versus reasoning post training | `microsoft/Phi-4-reasoning` | `phi4_reasoning` |
-
-Run all nine checkpoints in the declared order:
+Run all five checkpoints in the declared order:
 
 ```bash
 bash scripts/run_recommended_matrix.sh
 ```
 
-The source of truth for membership, family labels, protocol tier, and matched
-comparisons is `configs/recommended_matrix.json`. It also declares precision,
+The source of truth for membership, family labels, and protocol tier is
+`configs/recommended_matrix.json`. It also declares precision,
 attention implementation, and which downstream analyses apply to each model.
 The script finishes with
 `aggregate-study-matrix`, which rejects a missing or empty required artifact
-before writing combined tables and matched post training contrasts.
+before writing combined tables.
 
 Resolve the commands without launching GPU work:
 
@@ -145,19 +137,34 @@ Face commit. With no override, direction fitting records the resolved commit
 in `direction_manifest.json`; the generated target and study specifications
 reuse that commit.
 
-The final argument is `full` or `matched`. Both protocols use the same five
-seeds, search iterations, context count, behavior gates, reachable state
-collection, and downstream analyses. The matched protocol runs EPO and GCG but
-omits random search, uniform random prompts, and natural text scanning as
-optimizer comparisons. Natural prompt interventions remain in the reachable
-state study.
+The final argument is `full`, `matched`, or `scaling`. The primary matrix uses
+`full`: five seeds, the complete optimizer comparison, all behavior gates,
+reachable state collection, active C-MAP discovery, and every downstream
+analysis. `matched` remains available for future controlled checkpoint pairs
+but is not part of the declared matrix.
 
-The Gemma 3 4B to 12B pair supports a within family scale comparison. Gemma 3
-12B and Gemma 4 12B support a cross generation comparison, but not an isolated
-architecture claim because their training data and recipes also differ. Phi 4
-Mini and Phi 4 provide an independent family replication at two scales.
-Pretrained and instruction tuned Gemma pairs, and the Phi 4 to Phi 4 Reasoning
-pair, are the matched post training analyses.
+The cross family checkpoints test whether the main 8B findings are confined
+to Qwen. They do not enter the size fit. The scaling hypothesis uses only four
+instruction tuned Qwen 3 checkpoints:
+
+| Size | Hugging Face checkpoint | Slug |
+| --- | --- | --- |
+| 0.6B | `Qwen/Qwen3-0.6B` | `qwen3_0_6b_scaling` |
+| 1.7B | `Qwen/Qwen3-1.7B` | `qwen3_1_7b_scaling` |
+| 4B | `Qwen/Qwen3-4B` | `qwen3_4b_scaling` |
+| 8B | `Qwen/Qwen3-8B` | `qwen3_8b_scaling` |
+
+```bash
+bash scripts/run_scaling_matrix.sh
+```
+
+`configs/scaling_matrix.json` reruns all four sizes and writes the fit to
+`runs/controllability/scaling_matrix`. The distinct scaling slugs prevent full
+primary artifacts from entering the fit. Every size uses three optimizer seeds,
+eight search contexts, 128 behavior examples, and a four direction C-MAP
+budget. This matched budget is required to separate size from search effort.
+The series is a targeted hypothesis test, not a replacement for the deep 8B
+analysis.
 
 Each script performs the following work without a smoke run substitution:
 
@@ -169,22 +176,30 @@ Each script performs the following work without a smoke run substitution:
    sets.
 4. It creates fixed addition, directional ablation, PID, orthogonal random,
    per example prompt rewrite, optimized prompt, and hybrid sweeps.
-5. It generates one deterministic output, then recaptures that exact sequence
-   without leaving the intervention lifecycle. PID state remains live through
-   capture, while generation cost and tracking error are snapshotted first.
+5. It generates one deterministic output, snapshots generation cost and
+   controller tracking error, resets controller state, and recaptures the exact
+   sequence. The reset prevents feedback accumulated during generation from
+   leaking into a separate full sequence replay.
 6. It admits a state only when task correctness, prompt semantics, output
    semantics, output quality, and the control budget all pass.
-7. It computes setpoint reachability, dose response, budget growth, layer
-   propagation, source and subject transfer, local Jacobian spectra, causal
-   route tests, monitor invariance, and reachable state augmentation.
-8. It renders the predeclared figures directly from the archived tables.
+7. It actively proposes residual directions outside the observed tangent span,
+   brackets their validation split behavior boundary, and evaluates accepted
+   directions on held out test examples with C-MAP.
+8. It computes setpoint reachability, censored behavior boundaries, directed
+   channel accessibility, the detection control gap, dose response, budget
+   growth, the controllability atlas, boundary sharpness, layer propagation,
+   source and subject transfer, local Jacobian spectra, causal route tests,
+   monitor invariance, and reachable state augmentation.
+9. It renders the predeclared figures directly from the archived tables.
 
 The prompt search averages every objective over 16 training contexts sampled
 per seed. It uses sequence length 32, population 24, 150 iterations, 16 explored
 replacements per population member, a gradient candidate set of 256, and seeds
-0 through 4 for each direction. Gradient microbatches are 4 for the 4B
-checkpoints and 1 for the 12B to 14B checkpoints. Context graphs are backpropagated
-and released one at a time, then averaged into the same 16 context objective.
+0 through 4 for each direction. On CUDA, gradient microbatches are 4 for most
+small checkpoints, 2 for Qwen 3 8B, and 1 for Gemma 3 12B. On Apple silicon,
+Qwen 3 8B and Gemma 3 12B use search batch 1; Qwen 3 8B direction fitting uses
+batch 2. Context graphs are backpropagated and released one at a time, then
+averaged into the same 16 context objective.
 Direction fitting uses the same model specific microbatch and a 768 token
 prompt limit. Microbatch size does not change the candidate count. Validation
 and test controllability records are not used during prompt search.
@@ -204,12 +219,10 @@ checkpoints receive plain text. Instruction tuned checkpoints receive the
 checkpoint's native chat template. Optimized prompt tokens are inserted inside
 the user message before the generation marker, not as an assistant prefill.
 
-Gemma 4 is loaded with `AutoModelForMultimodalLM` and its nested text model is
-used for residual hooks. The experiments remain text only. Thinking is disabled
-for Gemma 4 so generated reasoning traces do not create a hidden
-difference in output length or control cost. Phi 4 Reasoning keeps its native
-reasoning behavior because that post training change is the object of the
-matched comparison.
+Gemma 3 is loaded with its multimodal wrapper and the nested text transformer
+is used for residual hooks. The experiments remain text only. Qwen 3 uses its
+native chat template with thinking disabled so generated reasoning traces do
+not create a hidden difference in output length or control cost across sizes.
 
 ## 5. Token pooling monitor study
 
@@ -233,8 +246,8 @@ After the corresponding reachable archives exist, run:
 bash scripts/run_gemma_scope_matrix.sh
 ```
 
-This study covers Gemma 3 4B and 12B in both pretrained and instruction tuned
-forms. It selects the fitted target layer from the direction sweep, loads the
+This study covers the instruction tuned Gemma 3 4B and 12B checkpoints. It
+selects the fitted target layer from the direction sweep, loads the
 official 16k all layer post residual SAE at the small sparsity setting, and
 encodes only states from that model and layer. The output contains per sample
 top features, reconstruction statistics, channel displacements from the
@@ -282,6 +295,7 @@ layers
 target_directions
 constraints
 interventions
+cmap
 seed
 ```
 
@@ -306,12 +320,30 @@ runs/controllability/gemma3_4b_it/reachable/target_geometry.csv
 runs/controllability/gemma3_4b_it/reachable/budget_growth.csv
 runs/controllability/gemma3_4b_it/reachable/layer_propagation.csv
 runs/controllability/gemma3_4b_it/reachable/principal_angles.csv
+runs/controllability/gemma3_4b_it/reachable/split_half_stability.csv
+runs/controllability/gemma3_4b_it/reachable/split_half_stability_summary.csv
+runs/controllability/gemma3_4b_it/reachable/controllability_boundaries.csv
+runs/controllability/gemma3_4b_it/reachable/controllability_boundary_summary.csv
+runs/controllability/gemma3_4b_it/reachable/directed_accessibility.csv
+runs/controllability/gemma3_4b_it/reachable/directed_accessibility_summary.csv
+runs/controllability/gemma3_4b_it/reachable/detection_control_gap.csv
+runs/controllability/gemma3_4b_it/reachable/representation_control_gap.csv
+runs/controllability/gemma3_4b_it/reachable/controllability_atlas.csv
+runs/controllability/gemma3_4b_it/reachable/boundary_survival.csv
+runs/controllability/gemma3_4b_it/reachable/phase_transition_candidates.csv
+runs/controllability/gemma3_4b_it/reachable/cmap/states.npz
+runs/controllability/gemma3_4b_it/reachable/cmap/samples.jsonl
+runs/controllability/gemma3_4b_it/reachable/cmap_directions.npz
+runs/controllability/gemma3_4b_it/reachable/cmap_queries.csv
+runs/controllability/gemma3_4b_it/reachable/cmap_directions.csv
+runs/controllability/gemma3_4b_it/reachable/cmap_summary.csv
 runs/controllability/gemma3_4b_it/control/control_costs.csv
 runs/controllability/gemma3_4b_it/control/control_summary.csv
 runs/controllability/gemma3_4b_it/control/dose_response.csv
 runs/controllability/gemma3_4b_it/control/tracking_stability.csv
 runs/controllability/gemma3_4b_it/jacobians.csv
 runs/controllability/gemma3_4b_it/jacobians_spectrum.csv
+runs/controllability/gemma3_4b_it/jacobians_control_basis.npy
 runs/controllability/gemma3_4b_it/jacobians.manifest.json
 runs/controllability/gemma3_4b_it/transfer_source.csv
 runs/controllability/gemma3_4b_it/transfer_source.summary.json
@@ -336,6 +368,10 @@ runs/controllability/matrix/manifest.json
 runs/controllability/matrix/model_summaries.csv
 runs/controllability/matrix/matched_contrasts.csv
 runs/controllability/matrix/revisions.csv
+runs/controllability/matrix/scaling_diagnostics.csv
+runs/controllability/matrix/scaling_replication.csv
+runs/controllability/matrix/figures/controllability_scaling.png
+runs/controllability/matrix/figures/representation_control_gap.png
 ```
 
 An experiment is incomplete if any required table is empty, if an expected
@@ -355,12 +391,79 @@ the fitted direction from orthogonal movement. `budget_growth.csv` recomputes
 rank and radius at fixed cost thresholds, and `layer_propagation.csv` records
 expansion or contraction between captured layers.
 
-The Jacobian study uses the fitted concept direction and its orthogonal random
-control as a fixed two dimensional residual basis. Central finite differences
-with step 0.25 estimate the last token state Jacobian at every captured layer
-for 16 fixed test examples. Report rank, the full singular value spectrum,
-condition number, and the Gramian pseudodeterminant. This is a local result for
-the declared control basis, not a claim of full hidden state controllability.
+The within channel reference uses ten example grouped split half repeats for
+the prompt and activation channels. Each half is reduced to at most 32 states
+before its basis is estimated. This fixes the SVD workload and keeps the
+reference sample count equal across the two halves.
+
+`controllability_boundaries.csv` treats activation strength, ablation fraction,
+and controller setpoint as ordered sweeps. It reports the largest preserved
+control and the first observed failure beyond it. A sweep with no observed
+failure is right censored. Optimized prompts are an unordered discrete sample,
+so their envelope is labeled sample limited and must not be called a boundary.
+The summary table bootstraps examples and preserves the censoring rate.
+
+`directed_accessibility.csv` asks how closely states sampled through one
+channel can be matched by states sampled through the other. Prompt and
+activation sets are repeatedly reduced to the same number of points before
+nearest set distance, directed Hausdorff distance, and coverage are measured.
+This prevents a denser intervention grid from receiving an automatic
+advantage. Report both directions because prompt to activation coverage need
+not equal activation to prompt coverage. Examples with no accepted target state
+remain in the table with zero coverage and contribute to the reported empty set
+rate; they are not silently dropped from the normalized distance estimate.
+
+`representation_control_gap.csv` places natural class separation and the mean
+maximum behavior preserving movement on the same pooled projection scale. Its
+gap is the standardized detection margin minus the standardized control
+margin. `detection_control_gap.csv` retains the raw AUROC and span ratio for
+backward compatible analysis. A positive gap is evidence that the fitted
+feature is easier to detect than to control under the declared interventions.
+It is not an impossibility result. Labeled examples with no accepted control
+contribute zero movement.
+
+C-MAP is fit only on validation examples. At each round it estimates the
+accepted displacement tangent with an SVD, samples a fixed candidate pool,
+and selects the residual direction with the largest combination of unexplored
+tangent fraction and angular separation from earlier queries. Geometric dose
+expansion and bisection estimate the behavior boundary. Accepted directions
+are then frozen and evaluated on test examples. `cmap_queries.csv` retains
+failed as well as accepted model executions, `cmap_directions.npz` stores the
+actual control vectors, and `cmap_summary.csv` separates validation discovery
+from held out evaluation. The stopping reason must be reported with rank and
+radius; a finite budget map is not the full mathematical manifold.
+
+`controllability_atlas.csv` reports preservation, accepted state rank, and
+maximum displacement by concept, task category, source, layer, and channel.
+It includes failed interventions in its denominator. The atlas describes the
+declared controls and behavior gates. An empty or weak cell is not evidence
+that no possible intervention can control that behavior.
+
+`boundary_survival.csv` aligns each numeric intervention sweep to its sampled
+dose range and bootstraps examples. `phase_transition_candidates.csv` marks an
+abrupt boundary only when at least eight examples support a preservation drop
+of at least 0.25 with bootstrap probability at least 0.95. The label is
+`sharp_boundary_candidate`, not phase transition. A physical phase transition
+claim would require denser local sweeps, schedule robustness, and replication.
+
+The scaling aggregate fits predeclared Qwen 3 size trends for reachable rank,
+boundary displacement, the representation control gap, and local Jacobian authority.
+Three size points remain exploratory. Four points must have stable leave one
+size out slope sign and an R squared value of at least 0.80 before receiving a
+within family candidate label. The 0.6B, 1.7B, 4B, and 8B Qwen series can
+support a Qwen-family scaling candidate. A general LLM scaling law still
+requires the same slope direction in an independent family.
+
+The Jacobian study constructs a nested 32 dimensional orthonormal residual
+control basis. The fitted concept direction is the first coordinate, the
+declared orthogonal control is second, and seeded orthogonal directions fill
+the remaining coordinates. Central finite differences with step 0.25 estimate
+the last token state Jacobian at every captured layer for 16 fixed test
+examples. Report results at dimensions 8, 16, and 32, including rank fraction,
+the singular value spectrum, condition number, squared gain, and the Gramian
+pseudodeterminant. Stability across basis sizes is required before discussing
+local dimensionality. This remains a local result for direct residual control,
+not a claim of full hidden state or prompt controllability.
 
 Transfer pairs benchmark held out sources and subject categories within each
 model, layer, and control channel. The analysis compares shared intervention
@@ -424,8 +527,18 @@ settings. Test records are evaluated once under the fixed specification.
 Before any claim enters the paper:
 
 * all five full checkpoints must have complete full protocol artifacts
-* all four extra matched checkpoints must have complete matched protocol artifacts
+* all four reduced Qwen runs must use the same seeds, contexts, examples, and C-MAP budget
 * every geometry row must have a matching behavior preservation count
+* ordered boundary claims must report bracketed and censored rates
+* prompt envelopes must remain labeled as unordered finite samples
+* cross channel accessibility must use equal count subsampling and both directions
+* detection and control must be reported in common units and as separate quantities
+* C-MAP direction selection must use validation only and report held out test rows
+* C-MAP must retain failed queries, stopping reasons, and boundary censoring
+* atlas cells must retain failed interventions in preservation denominators
+* sharp boundary claims must satisfy the registered support and bootstrap rules
+* only the four point Qwen series may be used for the declared size fit
+* a general scaling claim requires an independently replicated family trend
 * transfer must use held out source groups
 * monitors must use question grouped train, validation, and test partitions
 * random directions must be orthogonal to the fitted concept direction
@@ -436,7 +549,8 @@ Before any claim enters the paper:
 ## 12. What remains after running the scripts
 
 The code path, commands, gates, metrics, and artifact formats are implemented.
-The remaining work is empirical: complete the model matrix, inspect failed
-behavior gates, run the token monitor and Gemma Scope subsets, and place the
-generated tables and figures into the paper. No result should be written from
-terminal output or an untracked plot.
+The remaining work is empirical: complete the primary matrix and Qwen scaling
+tier, inspect failed behavior gates and C-MAP stopping diagnostics, run the
+token monitor and Gemma Scope subsets, and place the generated tables and
+figures into the paper. No result should be written from terminal output or an
+untracked plot.

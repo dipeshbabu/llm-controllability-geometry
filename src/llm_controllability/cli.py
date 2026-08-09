@@ -25,7 +25,10 @@ from llm_controllability.data.behavior import (
 from llm_controllability.data.frontier import SOURCE_SPECS, build_frontier_data
 from llm_controllability.evaluation.causal_study import run_causal_study
 from llm_controllability.evaluation.control_study import run_control_study
-from llm_controllability.evaluation.figures import render_study_figures
+from llm_controllability.evaluation.figures import (
+    render_matrix_figures,
+    render_study_figures,
+)
 from llm_controllability.evaluation.jacobian_study import run_jacobian_study
 from llm_controllability.evaluation.matrix import aggregate_matrix
 from llm_controllability.evaluation.monitor_study import run_monitor_study
@@ -51,6 +54,18 @@ from llm_controllability.optimization.robustness import (
     robustness_summary_rows,
 )
 from llm_controllability.orchestration import ANALYSES, run_declared_matrix
+from llm_controllability.reachability import (
+    boundary_survival_rows,
+    controllability_atlas_rows,
+    controllability_boundary_rows,
+    detection_control_gap_rows,
+    directed_accessibility_rows,
+    phase_transition_candidate_rows,
+    split_half_stability_rows,
+    summarize_controllability_boundaries,
+    summarize_directed_accessibility,
+    summarize_split_half_stability,
+)
 from llm_controllability.reachability.geometry import summarize_reachability
 from llm_controllability.reachability.io import load_state_samples
 from llm_controllability.reporting.latex import rows_from_csv, rows_to_latex_table
@@ -114,8 +129,7 @@ def _load_texts(path: str | Path | None) -> list[str]:
         if path.suffix == ".jsonl":
             rows = [json.loads(line) for line in f if line.strip()]
             texts = [
-                str(row.get("prompt", row.get("text", ""))).strip()
-                for row in rows
+                str(row.get("prompt", row.get("text", ""))).strip() for row in rows
             ]
             return [text for text in texts if text]
         return [line.strip() for line in f if line.strip()]
@@ -227,7 +241,9 @@ def run_experiments(args) -> None:
                 )
             if "minscan" in methods:
                 if not texts:
-                    raise ValueError("minscan requires --texts or texts_path in the spec")
+                    raise ValueError(
+                        "minscan requires --texts or texts_path in the spec"
+                    )
                 records.extend(
                     minscan_baseline(
                         runner,
@@ -376,7 +392,9 @@ def generate_targets(args) -> None:
     if args.tokens:
         targets.extend(logit_specs(args.tokens, prefix=args.logit_prefix))
     if args.token_file:
-        targets.extend(logit_specs(_load_texts(args.token_file), prefix=args.logit_prefix))
+        targets.extend(
+            logit_specs(_load_texts(args.token_file), prefix=args.logit_prefix)
+        )
     if args.layers and args.neurons:
         targets.extend(
             neuron_specs(
@@ -516,7 +534,54 @@ def collect_reachable(args) -> None:
 
 def analyze_reachability(args) -> None:
     samples = load_state_samples(args.states_dir)
-    rows_to_csv(summarize_reachability(samples), args.out)
+    out_path = Path(args.out)
+    rows_to_csv(summarize_reachability(samples), out_path)
+    boundaries = controllability_boundary_rows(
+        samples,
+        target_metric=args.target_metric,
+    )
+    accessibility = directed_accessibility_rows(samples, seed=args.seed)
+    split_half = split_half_stability_rows(samples, seed=args.seed)
+    boundary_survival = boundary_survival_rows(
+        samples,
+        target_metric=args.target_metric,
+        seed=args.seed,
+    )
+    artifacts = {
+        "controllability_boundaries.csv": boundaries,
+        "controllability_boundary_summary.csv": (
+            summarize_controllability_boundaries(boundaries, seed=args.seed)
+        ),
+        "directed_accessibility.csv": accessibility,
+        "directed_accessibility_summary.csv": (
+            summarize_directed_accessibility(accessibility, seed=args.seed)
+        ),
+        "detection_control_gap.csv": detection_control_gap_rows(
+            samples,
+            target_metric=args.target_metric,
+        ),
+        "split_half_stability.csv": split_half,
+        "split_half_stability_summary.csv": summarize_split_half_stability(split_half),
+        "controllability_atlas.csv": controllability_atlas_rows(
+            samples,
+            target_metric=args.target_metric,
+        ),
+        "boundary_survival.csv": boundary_survival,
+        "phase_transition_candidates.csv": phase_transition_candidate_rows(
+            boundary_survival
+        ),
+    }
+    for filename, rows in artifacts.items():
+        rows_to_csv(rows, out_path.parent / filename)
+    print(
+        json.dumps(
+            {
+                "geometry": str(out_path),
+                "extended_artifacts": sorted(artifacts),
+            },
+            indent=2,
+        )
+    )
 
 
 def monitor_invariance_study(args) -> None:
@@ -600,6 +665,10 @@ def build_controllability_spec(args) -> None:
         semantic_model=args.semantic_model,
         minimum_semantic_similarity=args.minimum_semantic_similarity,
         store_token_states=args.store_token_states,
+        cmap_direction_budget=args.cmap_directions,
+        cmap_query_budget=args.cmap_query_budget,
+        cmap_validation_examples=args.cmap_validation_examples,
+        cmap_test_examples=args.cmap_test_examples,
         seed=args.seed,
     )
     print(json.dumps({"out": args.out, "layers": spec["layers"]}, indent=2))
@@ -622,9 +691,7 @@ def causal_study(args) -> None:
         args.out_dir,
         selection_layer=args.selection_layer,
         patch_layers=(
-            None
-            if args.patch_layers == "spec"
-            else parse_int_list(args.patch_layers)
+            None if args.patch_layers == "spec" else parse_int_list(args.patch_layers)
         ),
         prompt_prefix=args.prompt_prefix,
         activation_prefix=args.activation_prefix,
@@ -653,6 +720,7 @@ def jacobian_study(args) -> None:
         args.out,
         example_limit=args.example_limit,
         epsilon=args.epsilon,
+        basis_dimensions=tuple(args.basis_dimensions),
         seed=args.seed,
     )
     print(json.dumps(manifest, indent=2))
@@ -660,6 +728,11 @@ def jacobian_study(args) -> None:
 
 def render_figures(args) -> None:
     manifest = render_study_figures(args.run_dir, args.out_dir)
+    print(json.dumps(manifest, indent=2))
+
+
+def render_discovery_figures(args) -> None:
+    manifest = render_matrix_figures(args.matrix_dir, args.out_dir)
     print(json.dumps(manifest, indent=2))
 
 
@@ -826,7 +899,9 @@ def build_parser() -> argparse.ArgumentParser:
     gen.add_argument("--device-map")
     gen.set_defaults(func=generate_targets)
 
-    dirs = sub.add_parser("fit-directions", help="fit residual directions across layers")
+    dirs = sub.add_parser(
+        "fit-directions", help="fit residual directions across layers"
+    )
     dirs.add_argument("--contrast", required=True)
     dirs.add_argument("--contrast-eval")
     dirs.add_argument("--layers", required=True, help="layer list/range or 'all'")
@@ -864,7 +939,9 @@ def build_parser() -> argparse.ArgumentParser:
     table.add_argument("--label")
     table.set_defaults(func=latex_table)
 
-    beh_tpl = sub.add_parser("behavior-templates", help="write starter behavioral eval templates")
+    beh_tpl = sub.add_parser(
+        "behavior-templates", help="write starter behavioral eval templates"
+    )
     beh_tpl.add_argument("--out", required=True)
     beh_tpl.set_defaults(func=behavior_templates)
 
@@ -905,6 +982,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     geometry.add_argument("--states-dir", required=True)
     geometry.add_argument("--out", required=True)
+    geometry.add_argument("--target-metric", default="target_projection")
+    geometry.add_argument("--seed", type=int, default=0)
     geometry.set_defaults(func=analyze_reachability)
 
     monitors = sub.add_parser(
@@ -982,7 +1061,20 @@ def build_parser() -> argparse.ArgumentParser:
         "--strengths",
         nargs="+",
         type=float,
-        default=[-4.0, -2.0, -1.0, 1.0, 2.0, 4.0],
+        default=[
+            -16.0,
+            -8.0,
+            -4.0,
+            -2.0,
+            -1.0,
+            -0.5,
+            0.5,
+            1.0,
+            2.0,
+            4.0,
+            8.0,
+            16.0,
+        ],
     )
     study_spec.add_argument(
         "--ablation-fractions",
@@ -996,6 +1088,15 @@ def build_parser() -> argparse.ArgumentParser:
     study_spec.add_argument("--semantic-model")
     study_spec.add_argument("--minimum-semantic-similarity", type=float, default=0.8)
     study_spec.add_argument("--store-token-states", action="store_true")
+    study_spec.add_argument(
+        "--cmap-directions",
+        type=int,
+        default=0,
+        help="enable C-MAP with this active direction budget",
+    )
+    study_spec.add_argument("--cmap-query-budget", type=int, default=512)
+    study_spec.add_argument("--cmap-validation-examples", type=int, default=8)
+    study_spec.add_argument("--cmap-test-examples", type=int, default=16)
     study_spec.add_argument("--seed", type=int, default=0)
     study_spec.set_defaults(func=build_controllability_spec)
 
@@ -1049,6 +1150,13 @@ def build_parser() -> argparse.ArgumentParser:
     jacobians.add_argument("--out", required=True)
     jacobians.add_argument("--example-limit", type=int, default=16)
     jacobians.add_argument("--epsilon", type=float, default=0.25)
+    jacobians.add_argument(
+        "--basis-dimensions",
+        nargs="+",
+        type=int,
+        default=[8, 16, 32],
+        help="nested orthonormal residual-control dimensions",
+    )
     jacobians.add_argument("--seed", type=int, default=0)
     jacobians.set_defaults(func=jacobian_study)
 
@@ -1059,6 +1167,14 @@ def build_parser() -> argparse.ArgumentParser:
     figures.add_argument("--run-dir", required=True)
     figures.add_argument("--out-dir", required=True)
     figures.set_defaults(func=render_figures)
+
+    matrix_figures = sub.add_parser(
+        "render-matrix-figures",
+        help="render predeclared cross-model discovery figures",
+    )
+    matrix_figures.add_argument("--matrix-dir", required=True)
+    matrix_figures.add_argument("--out-dir", required=True)
+    matrix_figures.set_defaults(func=render_discovery_figures)
 
     matrix = sub.add_parser(
         "aggregate-study-matrix",

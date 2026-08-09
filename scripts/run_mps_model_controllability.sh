@@ -10,7 +10,13 @@ export PYTORCH_ENABLE_MPS_FALLBACK=${PYTORCH_ENABLE_MPS_FALLBACK:-1}
 export DEVICE_MAP=mps
 export MONITOR_DEVICE=mps
 export BATCH_SIZE=${BATCH_SIZE:-1}
-export DIRECTION_BATCH_SIZE=${DIRECTION_BATCH_SIZE:-1}
+if [[ -z "${DIRECTION_BATCH_SIZE:-}" ]]; then
+  if [[ "${MODEL_NAME}" == "Qwen/Qwen3-8B" ]]; then
+    export DIRECTION_BATCH_SIZE=2
+  else
+    export DIRECTION_BATCH_SIZE=1
+  fi
+fi
 
 exec bash scripts/run_model_controllability.sh \
   "${MODEL_NAME}" \

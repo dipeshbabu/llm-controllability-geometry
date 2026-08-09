@@ -154,15 +154,25 @@ def _sample(example_id, channel, name, state):
 class ModelAdapterTests(unittest.TestCase):
     def test_recommended_profiles(self):
         gemma3 = resolve_model_profile("google/gemma-3-4b-it")
-        gemma4 = resolve_model_profile("google/gemma-4-12B-it")
         phi = resolve_model_profile("microsoft/Phi-4-mini-instruct")
-        qwen = resolve_model_profile("Qwen/Qwen3-8B")
+        qwen_profiles = [
+            resolve_model_profile(f"Qwen/Qwen3-{size}")
+            for size in ("0.6B", "1.7B", "4B", "8B")
+        ]
 
         self.assertEqual(gemma3.loader, "multimodal")
         self.assertEqual(gemma3.prompt_format, "chat")
-        self.assertEqual(gemma4.enable_thinking, False)
         self.assertTrue(phi.trust_remote_code)
-        self.assertEqual(qwen.enable_thinking, False)
+        self.assertTrue(
+            all(profile.enable_thinking is False for profile in qwen_profiles)
+        )
+        self.assertTrue(
+            all(profile.prompt_format == "chat" for profile in qwen_profiles)
+        )
+        self.assertEqual(
+            resolve_model_profile("Qwen/Qwen3-4B-Base").prompt_format,
+            "plain",
+        )
         self.assertEqual(
             resolve_model_profile("google/gemma-3-4b-pt").prompt_format,
             "plain",

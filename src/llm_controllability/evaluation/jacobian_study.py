@@ -28,7 +28,49 @@ def _resolve(path: str, base_dir: Path) -> Path:
     return value if value.is_absolute() else base_dir / value
 
 
-def _load_basis(spec: dict[str, Any], base_dir: Path) -> tuple[int, torch.Tensor]:
+def _orthonormal_control_basis(
+    anchors: list[np.ndarray],
+    *,
+    dimension: int,
+    seed: int,
+) -> torch.Tensor:
+    if dimension <= 0:
+        raise ValueError("control basis dimension must be positive")
+    width = int(np.asarray(anchors[0]).size)
+    if dimension > width:
+        raise ValueError(
+            f"control basis dimension {dimension} exceeds residual width {width}"
+        )
+    rng = np.random.default_rng(seed)
+    candidates = [np.asarray(value, dtype=np.float64).reshape(-1) for value in anchors]
+    candidates.extend(rng.normal(size=width) for _ in range(4 * dimension))
+    basis: list[np.ndarray] = []
+    for candidate in candidates:
+        if candidate.size != width:
+            raise ValueError("all control basis anchors must have the same width")
+        residual = candidate.copy()
+        for vector in basis:
+            residual -= np.dot(residual, vector) * vector
+        norm = np.linalg.norm(residual)
+        if norm <= 1e-10:
+            continue
+        basis.append(residual / norm)
+        if len(basis) == dimension:
+            break
+    if len(basis) != dimension:
+        raise RuntimeError(
+            "failed to construct the requested orthonormal control basis"
+        )
+    return torch.as_tensor(np.stack(basis), dtype=torch.float32)
+
+
+def _load_basis(
+    spec: dict[str, Any],
+    base_dir: Path,
+    *,
+    dimension: int,
+    seed: int,
+) -> tuple[int, torch.Tensor]:
     target_directions = spec.get("target_directions", {})
     if len(target_directions) != 1:
         raise ValueError("Jacobian study requires exactly one target direction")
@@ -48,8 +90,11 @@ def _load_basis(spec: dict[str, Any], base_dir: Path) -> tuple[int, torch.Tensor
         np.load(_resolve(str(concept_path), base_dir)),
         np.load(_resolve(str(random_config["direction"]), base_dir)),
     ]
-    basis = torch.as_tensor(np.stack(directions), dtype=torch.float32)
-    basis = torch.nn.functional.normalize(basis, dim=1)
+    basis = _orthonormal_control_basis(
+        directions,
+        dimension=dimension,
+        seed=seed,
+    )
     return int(layer_text), basis
 
 
@@ -78,6 +123,7 @@ def capture_controlled_states(
 
     handles = [blocks[injection_layer].register_forward_hook(inject)]
     for layer in capture_layers:
+
         def capture(module, inputs, output, layer=layer):
             captured[layer] = _hidden_from_output(output)[:, -1]
 
@@ -129,10 +175,7 @@ def finite_difference_jacobians(
         )
         for layer in capture_layers:
             columns[layer].append((plus[layer] - minus[layer]) / (2.0 * epsilon))
-    return {
-        layer: np.stack(values, axis=1)
-        for layer, values in columns.items()
-    }
+    return {layer: np.stack(values, axis=1) for layer, values in columns.items()}
 
 
 def run_jacobian_study(
@@ -141,18 +184,25 @@ def run_jacobian_study(
     *,
     example_limit: int = 16,
     epsilon: float = 0.25,
+    basis_dimensions: tuple[int, ...] = (8, 16, 32),
     seed: int = 0,
 ) -> dict[str, Any]:
     spec_path = Path(spec_path)
     base_dir = spec_path.resolve().parent
     spec = json.loads(spec_path.read_text(encoding="utf-8"))
-    injection_layer, basis = _load_basis(spec, base_dir)
+    dimensions = sorted({int(value) for value in basis_dimensions})
+    if not dimensions or dimensions[0] <= 0:
+        raise ValueError("basis_dimensions must contain positive integers")
+    injection_layer, basis = _load_basis(
+        spec,
+        base_dir,
+        dimension=dimensions[-1],
+        seed=seed,
+    )
     capture_layers = [int(layer) for layer in spec["layers"]]
     examples = load_examples(_resolve(spec["data"]["path"], base_dir))
     if any(example.get("split") == "test" for example in examples):
-        examples = [
-            example for example in examples if example.get("split") == "test"
-        ]
+        examples = [example for example in examples if example.get("split") == "test"]
     random.Random(seed).shuffle(examples)
     examples = examples[:example_limit]
 
@@ -196,30 +246,35 @@ def run_jacobian_study(
             basis=basis,
             epsilon=epsilon,
         )
-        for layer, jacobian in jacobians.items():
-            row = {
-                "model_name": model_config["name"],
-                "example_id": example_id,
-                "injection_layer": injection_layer,
-                "capture_layer": layer,
-                "control_dimension": basis.shape[0],
-                "epsilon": epsilon,
-            }
-            row.update(local_controllability(jacobian))
-            rows.append(row)
-            for component, singular_value in enumerate(
-                np.linalg.svd(jacobian, compute_uv=False)
-            ):
-                spectrum_rows.append(
-                    {
-                        "model_name": model_config["name"],
-                        "example_id": example_id,
-                        "injection_layer": injection_layer,
-                        "capture_layer": layer,
-                        "component": component,
-                        "singular_value": float(singular_value),
-                    }
-                )
+        for layer, full_jacobian in jacobians.items():
+            for dimension in dimensions:
+                jacobian = full_jacobian[:, :dimension]
+                summary = local_controllability(jacobian)
+                singular = np.linalg.svd(jacobian, compute_uv=False)
+                row = {
+                    "model_name": model_config["name"],
+                    "example_id": example_id,
+                    "injection_layer": injection_layer,
+                    "capture_layer": layer,
+                    "control_dimension": dimension,
+                    "epsilon": epsilon,
+                    **summary,
+                    "rank_fraction": float(summary["rank"]) / dimension,
+                    "squared_gain": float(np.square(singular).sum()),
+                }
+                rows.append(row)
+                for component, singular_value in enumerate(singular):
+                    spectrum_rows.append(
+                        {
+                            "model_name": model_config["name"],
+                            "example_id": example_id,
+                            "injection_layer": injection_layer,
+                            "capture_layer": layer,
+                            "control_dimension": dimension,
+                            "component": component,
+                            "singular_value": float(singular_value),
+                        }
+                    )
 
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -238,17 +293,22 @@ def run_jacobian_study(
             writer.writerows(spectrum_rows)
     else:
         spectrum_path.write_text("", encoding="utf-8")
+    basis_path = out_path.with_name(f"{out_path.stem}_control_basis.npy")
+    np.save(basis_path, basis.detach().cpu().numpy())
     manifest = {
         "model": model_config["name"],
         "injection_layer": injection_layer,
         "capture_layers": capture_layers,
-        "control_dimension": int(basis.shape[0]),
+        "control_dimensions": dimensions,
+        "maximum_control_dimension": int(basis.shape[0]),
+        "basis_construction": "target_then_declared_orthogonal_then_seeded_gram_schmidt",
         "epsilon": epsilon,
         "n_examples": len(examples),
         "n_rows": len(rows),
         "n_spectrum_rows": len(spectrum_rows),
         "artifact": str(out_path),
         "spectrum_artifact": str(spectrum_path),
+        "basis_artifact": str(basis_path),
     }
     out_path.with_suffix(".manifest.json").write_text(
         json.dumps(manifest, indent=2) + "\n",

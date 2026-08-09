@@ -10,6 +10,9 @@
       "protocol": "full",
       "family": "gemma3",
       "scale_group": "small",
+      "parameter_count_billions": 4.0,
+      "training_regime": "instruction",
+      "research_role": "cross_family_check",
       "analyses": ["controllability", "token_monitors", "gemma_scope"]
     },
     {
@@ -18,15 +21,10 @@
       "protocol": "full",
       "family": "gemma3",
       "scale_group": "mid",
+      "parameter_count_billions": 12.0,
+      "training_regime": "instruction",
+      "research_role": "larger_validation",
       "analyses": ["controllability", "token_monitors", "gemma_scope"]
-    },
-    {
-      "slug": "gemma4_12b_it",
-      "model_name": "google/gemma-4-12B-it",
-      "protocol": "full",
-      "family": "gemma4",
-      "scale_group": "mid",
-      "analyses": ["controllability", "token_monitors"]
     },
     {
       "slug": "phi4_mini_instruct",
@@ -34,69 +32,33 @@
       "protocol": "full",
       "family": "phi4",
       "scale_group": "small",
+      "parameter_count_billions": 3.8,
+      "training_regime": "instruction",
+      "research_role": "cross_family_check",
       "analyses": ["controllability", "token_monitors"]
     },
     {
-      "slug": "phi4",
-      "model_name": "microsoft/phi-4",
+      "slug": "qwen3_4b",
+      "model_name": "Qwen/Qwen3-4B",
       "protocol": "full",
-      "family": "phi4",
-      "scale_group": "mid",
+      "family": "qwen3",
+      "scale_group": "small",
+      "parameter_count_billions": 4.0,
+      "training_regime": "instruction",
+      "research_role": "scale_anchor",
       "analyses": ["controllability", "token_monitors"]
     },
     {
-      "slug": "gemma3_4b_pt",
-      "model_name": "google/gemma-3-4b-pt",
-      "protocol": "matched",
-      "family": "gemma3",
-      "scale_group": "small",
-      "analyses": ["controllability", "gemma_scope"]
-    },
-    {
-      "slug": "gemma3_12b_pt",
-      "model_name": "google/gemma-3-12b-pt",
-      "protocol": "matched",
-      "family": "gemma3",
+      "slug": "qwen3_8b",
+      "model_name": "Qwen/Qwen3-8B",
+      "protocol": "full",
+      "family": "qwen3",
       "scale_group": "mid",
-      "analyses": ["controllability", "gemma_scope"]
-    },
-    {
-      "slug": "gemma4_12b_pt",
-      "model_name": "google/gemma-4-12B",
-      "protocol": "matched",
-      "family": "gemma4",
-      "scale_group": "mid",
-      "analyses": ["controllability"]
-    },
-    {
-      "slug": "phi4_reasoning",
-      "model_name": "microsoft/Phi-4-reasoning",
-      "protocol": "matched",
-      "family": "phi4",
-      "scale_group": "mid",
-      "analyses": ["controllability"]
+      "parameter_count_billions": 8.0,
+      "training_regime": "instruction",
+      "research_role": "deep_causal_anchor",
+      "analyses": ["controllability", "token_monitors"]
     }
   ],
-  "matched_comparisons": [
-    {
-      "name": "gemma3_4b_instruction_tuning",
-      "reference": "gemma3_4b_pt",
-      "comparison": "gemma3_4b_it"
-    },
-    {
-      "name": "gemma3_12b_instruction_tuning",
-      "reference": "gemma3_12b_pt",
-      "comparison": "gemma3_12b_it"
-    },
-    {
-      "name": "gemma4_12b_instruction_tuning",
-      "reference": "gemma4_12b_pt",
-      "comparison": "gemma4_12b_it"
-    },
-    {
-      "name": "phi4_reasoning_post_training",
-      "reference": "phi4",
-      "comparison": "phi4_reasoning"
-    }
-  ]
+  "matched_comparisons": []
 }

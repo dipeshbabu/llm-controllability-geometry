@@ -1,0 +1,54 @@
+{
+  "defaults": {
+    "dtype": "bfloat16",
+    "attn_implementation": "eager"
+  },
+  "aggregate_subdir": "scaling_matrix",
+  "models": [
+    {
+      "slug": "qwen3_0_6b_scaling",
+      "model_name": "Qwen/Qwen3-0.6B",
+      "protocol": "scaling",
+      "family": "qwen3",
+      "scale_group": "xsmall",
+      "parameter_count_billions": 0.6,
+      "training_regime": "instruction",
+      "research_role": "scaling",
+      "analyses": ["controllability"]
+    },
+    {
+      "slug": "qwen3_1_7b_scaling",
+      "model_name": "Qwen/Qwen3-1.7B",
+      "protocol": "scaling",
+      "family": "qwen3",
+      "scale_group": "xsmall",
+      "parameter_count_billions": 1.7,
+      "training_regime": "instruction",
+      "research_role": "scaling",
+      "analyses": ["controllability"]
+    },
+    {
+      "slug": "qwen3_4b_scaling",
+      "model_name": "Qwen/Qwen3-4B",
+      "protocol": "scaling",
+      "family": "qwen3",
+      "scale_group": "small",
+      "parameter_count_billions": 4.0,
+      "training_regime": "instruction",
+      "research_role": "scaling",
+      "analyses": ["controllability"]
+    },
+    {
+      "slug": "qwen3_8b_scaling",
+      "model_name": "Qwen/Qwen3-8B",
+      "protocol": "scaling",
+      "family": "qwen3",
+      "scale_group": "mid",
+      "parameter_count_billions": 8.0,
+      "training_regime": "instruction",
+      "research_role": "scaling",
+      "analyses": ["controllability"]
+    }
+  ],
+  "matched_comparisons": []
+}

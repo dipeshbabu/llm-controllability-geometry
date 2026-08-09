@@ -157,9 +157,9 @@ class SpecAndCliTests(unittest.TestCase):
         token_monitors = matrix_commands(matrix, "token_monitors")
         gemma_scope = matrix_commands(matrix, "gemma_scope")
 
-        self.assertEqual(len(controllability), 9)
+        self.assertEqual(len(controllability), 5)
         self.assertEqual(len(token_monitors), 5)
-        self.assertEqual(len(gemma_scope), 4)
+        self.assertEqual(len(gemma_scope), 2)
         self.assertTrue(
             all(command[1] == "scripts/run_model_controllability.sh"
                 for command in controllability)
@@ -172,6 +172,25 @@ class SpecAndCliTests(unittest.TestCase):
             all(command[1] == "scripts/run_gemma_scope_study.sh"
                 for command in gemma_scope)
         )
+
+    def test_scaling_matrix_uses_one_matched_qwen_protocol(self):
+        matrix = load_matrix(
+            Path(__file__).parents[1] / "configs" / "scaling_matrix.json"
+        )
+
+        commands = matrix_commands(matrix, "controllability")
+
+        self.assertEqual(len(commands), 4)
+        self.assertEqual(
+            {command[3] for command in commands},
+            {
+                "qwen3_0_6b_scaling",
+                "qwen3_1_7b_scaling",
+                "qwen3_4b_scaling",
+                "qwen3_8b_scaling",
+            },
+        )
+        self.assertTrue(all(command[-1] == "scaling" for command in commands))
 
     def test_cli_parser_accepts_matrix_launcher(self):
         parser = build_parser()

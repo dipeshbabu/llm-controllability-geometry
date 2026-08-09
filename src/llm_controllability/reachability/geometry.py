@@ -91,7 +91,9 @@ def principal_angles(
     variance_fraction: float = 0.95,
 ) -> np.ndarray:
     first_basis = principal_basis(first, rank=rank, variance_fraction=variance_fraction)
-    second_basis = principal_basis(second, rank=rank, variance_fraction=variance_fraction)
+    second_basis = principal_basis(
+        second, rank=rank, variance_fraction=variance_fraction
+    )
     if first_basis.shape[0] == 0 or second_basis.shape[0] == 0:
         return np.empty(0, dtype=np.float64)
     cosines = np.linalg.svd(first_basis @ second_basis.T, compute_uv=False)
@@ -188,7 +190,9 @@ def baseline_displacements(
     baselines: dict[tuple[str, str, int], np.ndarray] = {}
     for sample in samples:
         if sample.intervention.channel is ControlChannel.BASELINE:
-            baselines[(sample.example_id, sample.model_name, sample.layer)] = sample.state
+            baselines[(sample.example_id, sample.model_name, sample.layer)] = (
+                sample.state
+            )
 
     displacements: list[np.ndarray] = []
     for sample in samples:
@@ -200,7 +204,9 @@ def baseline_displacements(
             continue
         key = (sample.example_id, sample.model_name, sample.layer)
         if key not in baselines:
-            raise ValueError(f"missing baseline for example {sample.example_id!r}, layer {sample.layer}")
+            raise ValueError(
+                f"missing baseline for example {sample.example_id!r}, layer {sample.layer}"
+            )
         displacements.append(sample.state - baselines[key])
 
     if not displacements:
@@ -309,7 +315,9 @@ def summarize_trajectories(
                 "max_curvature": (
                     float(curvatures.max()) if curvatures.size else float("nan")
                 ),
-                "path_length": float(np.linalg.norm(np.diff(points, axis=0), axis=1).sum())
+                "path_length": float(
+                    np.linalg.norm(np.diff(points, axis=0), axis=1).sum()
+                )
                 if len(points) > 1
                 else 0.0,
             }
@@ -317,7 +325,9 @@ def summarize_trajectories(
     return rows
 
 
-def summarize_reachability(samples: Sequence[StateSample]) -> list[dict[str, float | int | str]]:
+def summarize_reachability(
+    samples: Sequence[StateSample],
+) -> list[dict[str, float | int | str]]:
     """Summarize each model, layer, and channel plus prompt/activation overlap."""
 
     grouped: dict[tuple[str, int], list[StateSample]] = defaultdict(list)
@@ -435,7 +445,9 @@ def budget_growth(
 ) -> list[dict[str, float | int | str]]:
     """Measure reachable-set growth as the accepted control budget increases."""
 
-    grouped: dict[tuple[str, int, ControlChannel], list[StateSample]] = defaultdict(list)
+    grouped: dict[tuple[str, int, ControlChannel], list[StateSample]] = defaultdict(
+        list
+    )
     for sample in samples:
         if (
             sample.intervention.channel is not ControlChannel.BASELINE
@@ -465,9 +477,7 @@ def budget_growth(
         }
         for budget in costs:
             accepted = [
-                sample
-                for sample in group
-                if sample.intervention.control_cost <= budget
+                sample for sample in group if sample.intervention.control_cost <= budget
             ]
             displacements = np.stack(
                 [
@@ -549,9 +559,7 @@ def layerwise_propagation(
                     "target_norm": norm,
                     "norm_change": norm - previous_norm,
                     "expansion_ratio": (
-                        norm / previous_norm
-                        if previous_norm > 0
-                        else float("nan")
+                        norm / previous_norm if previous_norm > 0 else float("nan")
                     ),
                 }
             )
@@ -585,3 +593,148 @@ def principal_angle_rows(
                 }
             )
     return rows
+
+
+def split_half_stability_rows(
+    samples: Sequence[StateSample],
+    *,
+    channels: Sequence[ControlChannel] = (
+        ControlChannel.PROMPT,
+        ControlChannel.ACTIVATION,
+    ),
+    repeats: int = 10,
+    maximum_states_per_half: int = 32,
+    seed: int = 0,
+) -> list[dict[str, float | int | str]]:
+    """Estimate within-channel subspace stability across example splits."""
+
+    if repeats <= 0:
+        raise ValueError("repeats must be positive")
+    if maximum_states_per_half <= 0:
+        raise ValueError("maximum_states_per_half must be positive")
+    baselines = {
+        (sample.model_name, sample.example_id, sample.layer): sample.state
+        for sample in samples
+        if sample.intervention.channel is ControlChannel.BASELINE
+    }
+    grouped: dict[
+        tuple[str, int, ControlChannel],
+        dict[str, list[np.ndarray]],
+    ] = defaultdict(lambda: defaultdict(list))
+    allowed_channels = set(channels)
+    for sample in samples:
+        key = (sample.model_name, sample.example_id, sample.layer)
+        if (
+            sample.intervention.channel is ControlChannel.BASELINE
+            or sample.intervention.channel not in allowed_channels
+            or not sample.behavior_preserved
+            or key not in baselines
+        ):
+            continue
+        grouped[(sample.model_name, sample.layer, sample.intervention.channel)][
+            sample.example_id
+        ].append(sample.state - baselines[key])
+
+    rows = []
+    rng = np.random.default_rng(seed)
+    for (model_name, layer, channel), by_example in sorted(
+        grouped.items(),
+        key=lambda item: (item[0][0], item[0][1], item[0][2].value),
+    ):
+        example_ids = sorted(by_example)
+        if len(example_ids) < 4:
+            continue
+        half_size = len(example_ids) // 2
+        for repeat in range(repeats):
+            permutation = rng.permutation(example_ids)
+            first_ids = permutation[:half_size]
+            second_ids = permutation[half_size : 2 * half_size]
+            first = np.stack(
+                [state for example_id in first_ids for state in by_example[example_id]]
+            )
+            second = np.stack(
+                [state for example_id in second_ids for state in by_example[example_id]]
+            )
+            sample_size = min(
+                first.shape[0],
+                second.shape[0],
+                maximum_states_per_half,
+            )
+            if first.shape[0] > sample_size:
+                first = first[rng.choice(first.shape[0], sample_size, replace=False)]
+            if second.shape[0] > sample_size:
+                second = second[rng.choice(second.shape[0], sample_size, replace=False)]
+            rows.append(
+                {
+                    "model_name": model_name,
+                    "layer": layer,
+                    "channel": channel.value,
+                    "repeat": repeat,
+                    "n_examples_per_half": half_size,
+                    "n_states_per_half": sample_size,
+                    "subspace_overlap": subspace_overlap(first, second),
+                    "first_effective_rank": effective_rank(first, center=False),
+                    "second_effective_rank": effective_rank(second, center=False),
+                }
+            )
+    return rows
+
+
+def summarize_split_half_stability(
+    rows: Sequence[dict[str, float | int | str]],
+) -> list[dict[str, float | int | str]]:
+    """Summarize repeated split-half estimates without treating repeats as data."""
+
+    grouped: dict[tuple[str, int, str], list[dict[str, float | int | str]]] = (
+        defaultdict(list)
+    )
+    for row in rows:
+        grouped[
+            (str(row["model_name"]), int(row["layer"]), str(row["channel"]))
+        ].append(row)
+    summaries = []
+    for (model_name, layer, channel), group in sorted(grouped.items()):
+        overlaps = np.asarray(
+            [float(row["subspace_overlap"]) for row in group], dtype=np.float64
+        )
+        ranks = np.asarray(
+            [
+                0.5
+                * (
+                    float(row["first_effective_rank"])
+                    + float(row["second_effective_rank"])
+                )
+                for row in group
+            ],
+            dtype=np.float64,
+        )
+        finite_overlap = overlaps[np.isfinite(overlaps)]
+        finite_rank = ranks[np.isfinite(ranks)]
+        summaries.append(
+            {
+                "model_name": model_name,
+                "layer": layer,
+                "channel": channel,
+                "repeats": len(group),
+                "n_examples_per_half": int(group[0]["n_examples_per_half"]),
+                "mean_subspace_overlap": (
+                    float(finite_overlap.mean())
+                    if finite_overlap.size
+                    else float("nan")
+                ),
+                "subspace_overlap_q05": (
+                    float(np.quantile(finite_overlap, 0.05))
+                    if finite_overlap.size
+                    else float("nan")
+                ),
+                "subspace_overlap_q95": (
+                    float(np.quantile(finite_overlap, 0.95))
+                    if finite_overlap.size
+                    else float("nan")
+                ),
+                "mean_effective_rank": (
+                    float(finite_rank.mean()) if finite_rank.size else float("nan")
+                ),
+            }
+        )
+    return summaries

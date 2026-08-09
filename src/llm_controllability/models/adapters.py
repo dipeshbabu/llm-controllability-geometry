@@ -61,13 +61,13 @@ def resolve_model_profile(
         "microsoft/phi-4-reasoning-plus",
     }:
         profile = ModelProfile(family="phi4", prompt_format="chat")
-    elif normalized == "qwen/qwen3-8b":
+    elif normalized.startswith("qwen/qwen3-") and not normalized.endswith("-base"):
         profile = ModelProfile(
             family="qwen3",
             prompt_format="chat",
             enable_thinking=False,
         )
-    elif normalized == "qwen/qwen3-8b-base":
+    elif normalized.startswith("qwen/qwen3-") and normalized.endswith("-base"):
         profile = ModelProfile(family="qwen3")
     elif normalized.endswith(("-instruct", "-it")):
         profile = ModelProfile(family="generic", prompt_format="chat")

@@ -86,6 +86,7 @@ def run_and_capture(
     *,
     pooling: Literal["last", "mean", "max"] = "last",
     max_length: int = 2048,
+    store_token_states: bool = False,
 ) -> tuple[
     str,
     str,
@@ -117,9 +118,18 @@ def run_and_capture(
         generation_kwargs["temperature"] = float(generation.get("temperature", 1.0))
         generation_kwargs["top_p"] = float(generation.get("top_p", 1.0))
 
-    captured: dict[int, torch.Tensor] = {}
-    handles = []
     with intervention.apply(model):
+        with torch.no_grad():
+            generated = model.generate(**prompt_tokens, **generation_kwargs)
+        generation_diagnostics = intervention.diagnostics()
+        generation_control_cost = intervention.control_cost(tokenizer)
+        # Recapture from the controller's declared initial state. Carrying
+        # feedback history from generation into a full-sequence replay would
+        # create a state that occurred in neither execution.
+        intervention.reset()
+
+        captured: dict[int, torch.Tensor] = {}
+        handles = []
         for layer in layers:
 
             def hook(module, inputs, block_output, layer=layer):
@@ -127,15 +137,8 @@ def run_and_capture(
 
             handles.append(get_layers(model)[layer].register_forward_hook(hook))
         try:
+            full_mask = torch.ones_like(generated, dtype=torch.long)
             with torch.no_grad():
-                generated = model.generate(**prompt_tokens, **generation_kwargs)
-                generation_diagnostics = intervention.diagnostics()
-                generation_control_cost = intervention.control_cost(tokenizer)
-                # Recapture from the controller's declared initial state. Carrying
-                # feedback history from generation into a full-sequence replay
-                # would create a state that occurred in neither execution.
-                intervention.reset()
-                full_mask = torch.ones_like(generated, dtype=torch.long)
                 model(input_ids=generated, attention_mask=full_mask)
         finally:
             for handle in handles:
@@ -156,7 +159,8 @@ def run_and_capture(
         else:
             raise ValueError(f"unknown pooling method: {pooling}")
         result[layer] = pooled[0].detach().float().cpu().numpy()
-        token_states[layer] = hidden[0].detach().float().cpu().numpy()
+        if store_token_states:
+            token_states[layer] = hidden[0].detach().float().cpu().numpy()
     execution = {
         "control_cost": generation_control_cost,
         **generation_diagnostics,
@@ -297,6 +301,7 @@ def collect_reachable_states(
             generation,
             pooling=pooling,
             max_length=max_length,
+            store_token_states=store_token_states,
         )
         base_task_score, base_correct = verify_output(base_output, example)
         if semantic_embedder is not None:
@@ -338,6 +343,7 @@ def collect_reachable_states(
                     generation,
                     pooling=pooling,
                     max_length=max_length,
+                    store_token_states=store_token_states,
                 )
                 task_score, task_correct = verify_output(output, example)
                 if semantic_embedder is not None:

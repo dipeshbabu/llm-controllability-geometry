@@ -58,7 +58,7 @@ The command must report `"selected_device": "mps"` and
 CUDA when available, then MPS, then CPU. Explicitly requesting an unavailable
 backend fails instead of silently running on CPU.
 
-Run a complete model study on MPS with:
+Run a bounded end-to-end pilot on MPS with:
 
 ```bash
 bash scripts/run_mps_model_controllability.sh \
@@ -68,7 +68,8 @@ bash scripts/run_mps_model_controllability.sh \
 
 The MPS launcher uses eager attention, float16 weights, one-example batches,
 MPS monitor training, and CPU fallback for PyTorch operations that Metal does
-not implement. MPS bfloat16 requires macOS 14 or newer; earlier releases
+not implement. Pass `float16 full` after the slug to run the publication-scale
+protocol instead. MPS bfloat16 requires macOS 14 or newer; earlier releases
 automatically use float16.
 
 MPS cannot offload part of a checkpoint to CPU through

@@ -363,6 +363,28 @@ class ResearchWorkflowTests(unittest.TestCase):
                 (out / "behavior" / "controllability_test.jsonl").exists()
             )
             self.assertTrue((out / "controls" / "prompt_rewrites.json").exists())
+            behavior = json.loads(
+                (out / "behavior" / "frontier_behavior.json").read_text()
+            )
+
+        self.assertIn("continuations", behavior[0])
+
+    def test_gpqa_choices_are_shuffled_with_a_recomputed_answer(self):
+        item = frontier_question_from_row(
+            "gpqa_diamond",
+            {
+                "Question": "Which answer is correct?",
+                "Correct Answer": "correct",
+                "Incorrect Answer 1": "wrong one",
+                "Incorrect Answer 2": "wrong two",
+                "Incorrect Answer 3": "wrong three",
+            },
+        )
+
+        self.assertIsNotNone(item)
+        assert item is not None
+        answer_index = ord(item.answer or "") - ord("A")
+        self.assertEqual(item.choices[answer_index], "correct")
 
 
 if __name__ == "__main__":

@@ -14,4 +14,4 @@ venv/
 
 runs/
 results/
-data/
+/data/

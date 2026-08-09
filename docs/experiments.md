@@ -167,7 +167,7 @@ bash scripts/run_scaling_matrix.sh
 
 `configs/scaling_matrix.json` reruns all four sizes and writes the fit to
 `runs/controllability/scaling_matrix`. The distinct scaling slugs prevent full
-primary artifacts from entering the fit. Every size uses three optimizer seeds,
+primary artifacts from entering the fit. Every size uses five optimizer seeds,
 eight search contexts, 128 behavior examples, and a four direction C-MAP
 budget. This matched budget is required to separate size from search effort.
 The series is a targeted hypothesis test, not a replacement for the deep 8B
@@ -179,8 +179,8 @@ Each script performs the following work without a smoke run substitution:
 2. It retains the strongest layer and runs EPO, GCG, equal budget random
    search, uniform random prompts, and natural text scanning in both projection
    directions.
-3. It exports eight decrease and eight increase controls from the two Pareto
-   sets.
+3. It exports eight decrease and eight increase controls from seed-specific
+   Pareto sets in round-robin seed order and writes source seed provenance.
 4. It creates fixed addition, directional ablation, PID, orthogonal random,
    per example prompt rewrite, optimized prompt, and hybrid sweeps.
 5. It generates one deterministic output, snapshots generation cost and
@@ -189,9 +189,9 @@ Each script performs the following work without a smoke run substitution:
    leaking into a separate full sequence replay.
 6. It admits a state only when task correctness, prompt semantics, output
    semantics, output quality, and the control budget all pass.
-7. It actively proposes residual directions outside the observed tangent span,
-   brackets their validation split behavior boundary, and evaluates accepted
-   directions on held out test examples with C-MAP.
+7. For each of five seeds, it actively proposes residual directions outside the
+   observed tangent span, brackets their validation split behavior boundary,
+   and evaluates accepted directions on held out test examples with C-MAP.
 8. It computes setpoint reachability, censored behavior boundaries, directed
    channel accessibility, the detection control gap, dose response, budget
    growth, the controllability atlas, boundary sharpness, layer propagation,
@@ -210,6 +210,13 @@ averaged into the same 16 context objective.
 Direction fitting uses the same model specific microbatch and a 768 token
 prompt limit. Microbatch size does not change the candidate count. Validation
 and test controllability records are not used during prompt search.
+
+The C-MAP query budget is applied independently to each seed. The full protocol
+therefore permits up to 512 validation discovery queries per seed, while the
+scaling protocol permits up to 192. `cmap_queries.csv`, `cmap_directions.csv`,
+and `cmap_summary.csv` retain the seed column. Prompt export writes
+`optimized_prompt_controls.txt.provenance.json` with the source optimizer seed,
+method, objective, and fluency score for every selected suffix.
 
 The main reachable state study uses up to 512 prompt variants across the fixed
 three way split. Final geometry, control, transfer, and causal tables use test
@@ -318,6 +325,7 @@ runs/controllability/gemma3_4b_it/directions/gemma3_4b_it_eval_awareness_layer_s
 runs/controllability/gemma3_4b_it/prompt_search/candidates.csv
 runs/controllability/gemma3_4b_it/prompt_search/summary.csv
 runs/controllability/gemma3_4b_it/optimized_prompt_controls.txt
+runs/controllability/gemma3_4b_it/optimized_prompt_controls.txt.provenance.json
 runs/controllability/gemma3_4b_it/study.json
 runs/controllability/gemma3_4b_it/reachable/states.npz
 runs/controllability/gemma3_4b_it/reachable/samples.jsonl
@@ -350,7 +358,11 @@ runs/controllability/gemma3_4b_it/control/dose_response.csv
 runs/controllability/gemma3_4b_it/control/tracking_stability.csv
 runs/controllability/gemma3_4b_it/jacobians.csv
 runs/controllability/gemma3_4b_it/jacobians_spectrum.csv
-runs/controllability/gemma3_4b_it/jacobians_control_basis.npy
+runs/controllability/gemma3_4b_it/jacobians_control_basis_seed_0.npy
+runs/controllability/gemma3_4b_it/jacobians_control_basis_seed_1.npy
+runs/controllability/gemma3_4b_it/jacobians_control_basis_seed_2.npy
+runs/controllability/gemma3_4b_it/jacobians_control_basis_seed_3.npy
+runs/controllability/gemma3_4b_it/jacobians_control_basis_seed_4.npy
 runs/controllability/gemma3_4b_it/jacobians.manifest.json
 runs/controllability/gemma3_4b_it/transfer_source.csv
 runs/controllability/gemma3_4b_it/transfer_source.summary.json
@@ -365,6 +377,7 @@ runs/controllability/gemma3_4b_it/monitors/monitor_scores.csv
 runs/controllability/gemma3_4b_it/monitors/monitor_invariance.csv
 runs/controllability/gemma3_4b_it/monitors/monitor_comparisons.csv
 runs/controllability/gemma3_4b_it/monitors/ood_scores.csv
+runs/controllability/gemma3_4b_it/monitors/manifest.json
 runs/controllability/gemma3_4b_it/figures/manifest.json
 ```
 
@@ -461,9 +474,9 @@ within family candidate label. The 0.6B, 1.7B, 4B, and 8B Qwen series can
 support a Qwen-family scaling candidate. A general LLM scaling law still
 requires the same slope direction in an independent family.
 
-The Jacobian study constructs a nested 32 dimensional orthonormal residual
-control basis. The fitted concept direction is the first coordinate, the
-declared orthogonal control is second, and seeded orthogonal directions fill
+The Jacobian study constructs five independently seeded nested 32 dimensional
+orthonormal residual control bases. The fitted concept direction is the first
+coordinate, the declared orthogonal control is second, and seeded orthogonal directions fill
 the remaining coordinates. Central finite differences with step 0.25 estimate
 the last token state Jacobian at every captured layer for 16 fixed test
 examples. Report results at dimensions 8, 16, and 32, including rank fraction,
@@ -481,8 +494,10 @@ displacement, preservation rate, layer depth, and shared intervention count.
 Each summary also reports these statistics separately for prompt, activation,
 hybrid, and random channels.
 
-Monitor evaluation follows the declared question level train, validation, and
-test split. The neutral and evaluation versions of a question always remain in
+Monitor evaluation repeats every declared monitor fit for seeds 0 through 4
+and preserves seed-level score, invariance, OOD, and comparison tables. It
+follows the declared question level train, validation, and test split. The
+neutral and evaluation versions of a question always remain in
 the same partition. Train the natural monitor on baseline train states only.
 Train the augmented monitor on baseline plus behavior preserving train states.
 Choose each decision threshold on baseline validation states, then evaluate
@@ -504,7 +519,8 @@ maximum error, final error, and update size for the adaptive controller.
 
 The model script runs `causal-study` after reachable state collection. It
 selects one behavior preserving optimized prompt and fixed activation control
-per question by minimizing their target projection gap. It reruns both controls
+per question by minimizing their target projection gap, then deterministically
+keeps the closest matched examples up to the declared limit. It reruns both controls
 deterministically, patches the source last token state into the other channel at
 every captured layer, and repeats the patch in the reverse direction.
 
@@ -524,8 +540,9 @@ establish mechanism reuse.
 
 Use paired bootstrap intervals over matched examples and paired permutation
 tests for method comparisons. Keep source, concept, model, and layer visible in
-the analysis table. Search seeds measure optimizer variation. They do not
-replace example level uncertainty or model family replication.
+the analysis table. Search, C-MAP, monitor, and Jacobian seeds measure
+stochastic variation in their respective procedures. They do not replace
+example level uncertainty or model family replication.
 Report paired standardized effects. Apply Holm correction to the confirmatory
 comparison family and Benjamini Hochberg correction to the corresponding
 exploratory table. Validation chooses layers, monitor thresholds, and controller
@@ -535,6 +552,7 @@ Before any claim enters the paper:
 
 * all five full checkpoints must have complete full protocol artifacts
 * all four reduced Qwen runs must use the same seeds, contexts, examples, and C-MAP budget
+* every stochastic headline table must retain all five declared seed values
 * every geometry row must have a matching behavior preservation count
 * ordered boundary claims must report bracketed and censored rates
 * prompt envelopes must remain labeled as unordered finite samples

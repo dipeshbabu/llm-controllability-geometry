@@ -595,6 +595,7 @@ def monitor_invariance_study(args) -> None:
         reachable_weight=args.reachable_weight,
         monitor_device=args.monitor_device,
         seed=args.seed,
+        seeds=args.seeds,
     )
     print(json.dumps(manifest, indent=2))
 
@@ -669,6 +670,7 @@ def build_controllability_spec(args) -> None:
         cmap_query_budget=args.cmap_query_budget,
         cmap_validation_examples=args.cmap_validation_examples,
         cmap_test_examples=args.cmap_test_examples,
+        cmap_seeds=args.cmap_seeds,
         seed=args.seed,
     )
     print(json.dumps({"out": args.out, "layers": spec["layers"]}, indent=2))
@@ -722,6 +724,7 @@ def jacobian_study(args) -> None:
         epsilon=args.epsilon,
         basis_dimensions=tuple(args.basis_dimensions),
         seed=args.seed,
+        seeds=args.seeds,
     )
     print(json.dumps(manifest, indent=2))
 
@@ -1013,6 +1016,7 @@ def build_parser() -> argparse.ArgumentParser:
     monitors.add_argument("--reachable-weight", type=float, default=1.0)
     monitors.add_argument("--monitor-device", default="auto")
     monitors.add_argument("--seed", type=int, default=0)
+    monitors.add_argument("--seeds", nargs="+", type=int)
     monitors.set_defaults(func=monitor_invariance_study)
 
     controls = sub.add_parser(
@@ -1097,6 +1101,7 @@ def build_parser() -> argparse.ArgumentParser:
     study_spec.add_argument("--cmap-query-budget", type=int, default=512)
     study_spec.add_argument("--cmap-validation-examples", type=int, default=8)
     study_spec.add_argument("--cmap-test-examples", type=int, default=16)
+    study_spec.add_argument("--cmap-seeds", nargs="+", type=int)
     study_spec.add_argument("--seed", type=int, default=0)
     study_spec.set_defaults(func=build_controllability_spec)
 
@@ -1158,6 +1163,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="nested orthonormal residual-control dimensions",
     )
     jacobians.add_argument("--seed", type=int, default=0)
+    jacobians.add_argument("--seeds", nargs="+", type=int)
     jacobians.set_defaults(func=jacobian_study)
 
     figures = sub.add_parser(

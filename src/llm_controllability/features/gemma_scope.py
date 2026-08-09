@@ -19,9 +19,7 @@ from llm_controllability.evaluation.monitor_study import _select_threshold
 from llm_controllability.models.runtime import resolve_device
 from llm_controllability.monitors import LinearMonitor, augment_with_reachable_states
 from llm_controllability.reachability.geometry import (
-    effective_rank,
-    numerical_rank,
-    participation_ratio,
+    spectral_metrics,
     subspace_overlap,
 )
 from llm_controllability.reachability.io import load_state_samples
@@ -292,11 +290,12 @@ def analyze_gemma_scope_features(
     }
     for channel, displacements in sorted(channel_displacements.items()):
         values = np.asarray(displacements, dtype=np.float64)
+        spectrum = spectral_metrics(values, center=False)
         geometry["channels"][channel] = {
             "n_displacements": int(values.shape[0]),
-            "effective_rank": effective_rank(values, center=False),
-            "participation_ratio": participation_ratio(values, center=False),
-            "numerical_rank": numerical_rank(values, center=False),
+            "effective_rank": spectrum["effective_rank"],
+            "participation_ratio": spectrum["participation_ratio"],
+            "numerical_rank": spectrum["numerical_rank"],
             "mean_displacement": float(np.linalg.norm(values, axis=1).mean()),
         }
     prompt = channel_displacements.get(ControlChannel.PROMPT.value, [])

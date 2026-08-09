@@ -117,7 +117,7 @@ size Qwen 3 protocol after the primary matrix:
 bash scripts/run_scaling_matrix.sh
 ```
 
-This reduced protocol reruns Qwen 3 0.6B, 1.7B, 4B, and 8B with identical
+This reduced protocol reruns Qwen 3 0.6B, 1.7B, 4B, and 8B with the same five
 seeds, contexts, example counts, and analysis budgets. It writes its aggregate under
 `runs/controllability/scaling_matrix`. It reports fitted trends, leave one
 size out stability, and an evidence qualification. A trend is never labeled a
@@ -157,10 +157,12 @@ Run the Gemma Scope 2 feature analysis on the two Gemma 3 checkpoints:
 bash scripts/run_gemma_scope_matrix.sh
 ```
 
-The scripts use five search seeds, full layer direction fitting, hard prompt
-and output semantic gates, task and quality gates, prompt and activation
-sweeps, transfer analysis, causal reruns, held out monitor evaluation, and
-fixed figure generation. They are experiment commands, not smoke tests.
+The scripts use five prompt search and C-MAP seeds, five monitor fits, and five
+Jacobian control bases. Prompt controls are selected evenly across search seeds
+and retain a provenance sidecar. Full layer direction fitting, hard prompt and
+output semantic gates, task and quality gates, transfer analysis, deterministic
+causal pair selection, held out monitor evaluation, and fixed figure generation
+remain enabled. These are experiment commands, not smoke tests.
 [docs/experiments.md](docs/experiments.md) gives the model matrix, artifact
 checks, and reporting rules.
 
@@ -208,7 +210,7 @@ reported experiments use generated files under ignored `data/`.
 EPO and GCG can optimize suffixes over sampled training contexts. Random search
 and natural text scan remain available as prompt channel controls. The matrix
 searches both decrease and increase objectives and retains eight controls from
-each Pareto set.
+each Pareto set without allowing one lucky seed to supply the entire set.
 
 ## State archives
 

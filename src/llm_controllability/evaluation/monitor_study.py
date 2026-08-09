@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import json
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -468,7 +469,7 @@ def _aligned_multilayer(
     )
 
 
-def run_monitor_study(
+def _run_monitor_study_seed(
     states_dir: str | Path,
     out_dir: str | Path,
     *,
@@ -851,3 +852,73 @@ def run_monitor_study(
         "n_ood_rows": len(ood_rows),
         "n_comparison_rows": len(comparison_rows),
     }
+
+
+def run_monitor_study(
+    states_dir: str | Path,
+    out_dir: str | Path,
+    *,
+    label_key: str = "monitor_label",
+    monitor_kinds: Sequence[str] = ("linear", "nonlinear"),
+    train_fraction: float = 0.6,
+    validation_fraction: float = 0.2,
+    reachable_weight: float = 1.0,
+    monitor_device: str = "auto",
+    seed: int = 0,
+    seeds: Sequence[int] | None = None,
+) -> dict[str, Any]:
+    """Run monitor training independently for each declared random seed."""
+
+    seed_values = tuple(dict.fromkeys(int(value) for value in (seeds or [seed])))
+    if not seed_values:
+        raise ValueError("monitor seeds must not be empty")
+    out_dir = Path(out_dir)
+    filenames = (
+        "monitor_scores.csv",
+        "monitor_invariance.csv",
+        "ood_scores.csv",
+        "monitor_comparisons.csv",
+    )
+    combined = {filename: [] for filename in filenames}
+    seed_manifests = []
+    for value in seed_values:
+        seed_dir = out_dir / f"seed_{value}"
+        manifest = _run_monitor_study_seed(
+            states_dir,
+            seed_dir,
+            label_key=label_key,
+            monitor_kinds=monitor_kinds,
+            train_fraction=train_fraction,
+            validation_fraction=validation_fraction,
+            reachable_weight=reachable_weight,
+            monitor_device=monitor_device,
+            seed=value,
+        )
+        seed_manifests.append({"seed": value, **manifest})
+        for filename in filenames:
+            path = seed_dir / filename
+            if not path.exists() or path.stat().st_size == 0:
+                continue
+            with path.open("r", encoding="utf-8", newline="") as handle:
+                for row in csv.DictReader(handle):
+                    combined[filename].append({"seed": value, **row})
+    for filename, rows in combined.items():
+        _write_csv(rows, out_dir / filename)
+    manifest = {
+        "seeds": list(seed_values),
+        "n_seed_runs": len(seed_values),
+        "seed_runs": seed_manifests,
+        "n_train_examples": seed_manifests[0]["n_train_examples"],
+        "n_validation_examples": seed_manifests[0]["n_validation_examples"],
+        "n_test_examples": seed_manifests[0]["n_test_examples"],
+        "n_score_rows": len(combined["monitor_scores.csv"]),
+        "n_invariance_rows": len(combined["monitor_invariance.csv"]),
+        "n_ood_rows": len(combined["ood_scores.csv"]),
+        "n_comparison_rows": len(combined["monitor_comparisons.csv"]),
+    }
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "manifest.json").write_text(
+        json.dumps(manifest, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return manifest

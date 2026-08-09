@@ -49,15 +49,27 @@ def jacobian_rank(
 
 def local_controllability(
     jacobian: np.ndarray,
+    *,
+    singular_values: np.ndarray | None = None,
 ) -> dict[str, float | int]:
     """Rank, conditioning, and Gramian volume of a local linearization."""
 
     values = np.asarray(jacobian, dtype=np.float64)
     if values.ndim != 2:
         raise ValueError("jacobian must be a matrix")
-    singular = np.linalg.svd(values, compute_uv=False)
+    singular = (
+        np.linalg.svd(values, compute_uv=False)
+        if singular_values is None
+        else np.asarray(singular_values, dtype=np.float64)
+    )
+    if singular.ndim != 1:
+        raise ValueError("singular_values must be a vector")
     positive = singular[singular > max(singular[0] * 1e-12, 1e-15)] if singular.size else singular
-    rank = jacobian_rank(values)
+    rank = (
+        int(np.count_nonzero(singular > singular[0] * 1e-6))
+        if singular.size and singular[0] > 0
+        else 0
+    )
     condition = (
         float(positive[0] / positive[-1])
         if positive.size > 1

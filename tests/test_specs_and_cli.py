@@ -109,7 +109,17 @@ class SpecAndCliTests(unittest.TestCase):
             ["collect-reachable", "--spec", "study.json", "--out", "runs/study"]
         )
         monitor = parser.parse_args(
-            ["monitor-invariance", "--states-dir", "runs/study", "--out-dir", "runs/monitor"]
+            [
+                "monitor-invariance",
+                "--states-dir",
+                "runs/study",
+                "--out-dir",
+                "runs/monitor",
+                "--seeds",
+                "0",
+                "1",
+                "2",
+            ]
         )
         causal = parser.parse_args(
             [
@@ -140,6 +150,10 @@ class SpecAndCliTests(unittest.TestCase):
                 "study.json",
                 "--out",
                 "runs/jacobians.csv",
+                "--seeds",
+                "0",
+                "1",
+                "2",
             ]
         )
 
@@ -148,6 +162,8 @@ class SpecAndCliTests(unittest.TestCase):
         self.assertEqual(causal.command, "causal-study")
         self.assertEqual(control.command, "analyze-control")
         self.assertEqual(jacobians.command, "analyze-jacobians")
+        self.assertEqual(monitor.seeds, [0, 1, 2])
+        self.assertEqual(jacobians.seeds, [0, 1, 2])
 
     def test_recommended_matrix_drives_every_launcher(self):
         matrix = load_matrix(

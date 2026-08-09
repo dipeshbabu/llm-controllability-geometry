@@ -23,10 +23,7 @@ from llm_controllability.controllability.types import (
 from llm_controllability.interventions import ActivationAddition, NoIntervention
 from llm_controllability.models.adapters import ensure_padding_token
 from llm_controllability.reachability.collection import _quality_score, run_and_capture
-from llm_controllability.reachability.geometry import (
-    effective_rank,
-    participation_ratio,
-)
+from llm_controllability.reachability.geometry import spectral_metrics
 
 
 def _stable_seed(*parts: object, seed: int) -> int:
@@ -86,7 +83,8 @@ class CMapConfig:
 
     @classmethod
     def from_mapping(cls, values: Mapping[str, Any]) -> CMapConfig:
-        return cls(**{key: value for key, value in values.items() if key != "enabled"})
+        ignored = {"enabled", "seeds"}
+        return cls(**{key: value for key, value in values.items() if key not in ignored})
 
 
 @dataclass(frozen=True)
@@ -170,20 +168,30 @@ class ActiveTangentExplorer:
         self.accepted_displacements: list[np.ndarray] = []
         self.attempted_directions: list[np.ndarray] = []
         self.stagnant_rounds = 0
+        self._basis_cache = np.empty((0, self.width), dtype=np.float64)
+        self._basis_dirty = False
 
     def tangent_basis(self) -> np.ndarray:
+        if not self._basis_dirty:
+            return self._basis_cache
         if not self.accepted_displacements:
-            return np.empty((0, self.width), dtype=np.float64)
+            self._basis_cache = np.empty((0, self.width), dtype=np.float64)
+            self._basis_dirty = False
+            return self._basis_cache
         matrix = np.stack(self.accepted_displacements).astype(np.float64, copy=False)
         _, singular_values, right = np.linalg.svd(matrix, full_matrices=False)
         if not singular_values.size or singular_values[0] <= 1e-12:
-            return np.empty((0, self.width), dtype=np.float64)
+            self._basis_cache = np.empty((0, self.width), dtype=np.float64)
+            self._basis_dirty = False
+            return self._basis_cache
         rank = int(
             np.count_nonzero(
                 singular_values > singular_values[0] * self.config.rank_tolerance
             )
         )
-        return right[:rank]
+        self._basis_cache = right[:rank]
+        self._basis_dirty = False
+        return self._basis_cache
 
     @property
     def rank(self) -> int:
@@ -219,6 +227,7 @@ class ActiveTangentExplorer:
             raise ValueError("observed displacement width does not match explorer width")
         if preserved and np.linalg.norm(value) > 1e-10:
             self.accepted_displacements.append(value)
+            self._basis_dirty = True
 
     def finish_direction(self, previous_rank: int) -> None:
         if self.rank > previous_rank:
@@ -339,6 +348,7 @@ def _prepare_references(
             generation,
             pooling="last",
             max_length=max_length,
+            store_token_states=False,
         )
         record = _record(
             model,
@@ -442,6 +452,7 @@ def discover_controllability_manifold(
             {
                 "model_name": model_name,
                 "layer": config.layer,
+                "seed": config.seed,
                 "role": "validation",
                 "n_examples": len(validation),
                 "n_eligible_examples": 0,
@@ -478,7 +489,7 @@ def discover_controllability_manifold(
             stopping_reason = "tangent_span_saturated"
             break
         direction, novelty, acquisition_score = proposal
-        vector_key = f"direction_{direction_index:04d}"
+        vector_key = f"seed_{config.seed:04d}_direction_{direction_index:04d}"
         result.directions[vector_key] = direction
         previous_rank = explorer.rank
 
@@ -493,14 +504,21 @@ def discover_controllability_manifold(
         ) -> float:
             nonlocal discovery_queries
             preserved_count = 0
+            intervention = ActivationAddition(
+                name=f"cmap_s{config.seed:04d}_d{direction_index:04d}_a{strength:g}",
+                layer=config.layer,
+                direction=torch.from_numpy(direction),
+                strength=strength,
+                token_scope=config.token_scope,
+            )
+            control_cost = intervention.control_cost(tokenizer)
+            parameters = {
+                **intervention.parameters(),
+                "algorithm": "cmap",
+                "direction_index": direction_index,
+                "vector_key": vector_key,
+            }
             for reference in eligible_validation:
-                intervention = ActivationAddition(
-                    name=f"cmap_d{direction_index:04d}_a{strength:g}",
-                    layer=config.layer,
-                    direction=torch.from_numpy(direction),
-                    strength=strength,
-                    token_scope=config.token_scope,
-                )
                 prepared, output, states, _, execution = run_and_capture(
                     model,
                     tokenizer,
@@ -510,6 +528,7 @@ def discover_controllability_manifold(
                     generation,
                     pooling="last",
                     max_length=max_length,
+                    store_token_states=False,
                 )
                 record = _record(
                     model,
@@ -522,10 +541,11 @@ def discover_controllability_manifold(
                 preserved, verdicts = behavior_gate.evaluate(
                     reference.record,
                     record,
-                    control_cost=intervention.control_cost(tokenizer),
+                    control_cost=control_cost,
                 )
                 state = states[config.layer]
                 displacement = state - reference.state
+                displacement_norm = float(np.linalg.norm(displacement))
                 explorer.observe(displacement, preserved=preserved)
                 preserved_count += int(preserved)
                 discovery_queries += 1
@@ -542,7 +562,7 @@ def discover_controllability_manifold(
                         "cmap_query_index": float(discovery_queries),
                         "cmap_proposal_uncertainty": novelty,
                         "cmap_acquisition_score": acquisition_score,
-                        "state_displacement": float(np.linalg.norm(displacement)),
+                        "state_displacement": displacement_norm,
                     }
                 )
                 sample = StateSample(
@@ -552,13 +572,8 @@ def discover_controllability_manifold(
                     intervention=InterventionMetadata(
                         name=intervention.name,
                         channel=ControlChannel.ACTIVATION,
-                        control_cost=intervention.control_cost(tokenizer),
-                        parameters={
-                            **intervention.parameters(),
-                            "algorithm": "cmap",
-                            "direction_index": direction_index,
-                            "vector_key": vector_key,
-                        },
+                        control_cost=control_cost,
+                        parameters=parameters,
                     ),
                     state=state,
                     prompt=prepared,
@@ -576,6 +591,7 @@ def discover_controllability_manifold(
                     {
                         "model_name": model_name,
                         "layer": config.layer,
+                        "seed": config.seed,
                         "role": "validation",
                         "example_id": reference.example_id,
                         "direction_index": direction_index,
@@ -584,7 +600,7 @@ def discover_controllability_manifold(
                         "proposal_uncertainty": novelty,
                         "acquisition_score": acquisition_score,
                         "behavior_preserved": int(preserved),
-                        "state_displacement": float(np.linalg.norm(displacement)),
+                        "state_displacement": displacement_norm,
                         "binding_constraints": ";".join(
                             sorted(name for name, value in verdicts.items() if not value.passed)
                         ),
@@ -608,6 +624,7 @@ def discover_controllability_manifold(
             {
                 "model_name": model_name,
                 "layer": config.layer,
+                "seed": config.seed,
                 "direction_index": direction_index,
                 "vector_key": vector_key,
                 "proposal_uncertainty": novelty,
@@ -631,15 +648,22 @@ def discover_controllability_manifold(
 
     holdout_queries = 0
     for direction_index, strength, direction, novelty in accepted_strengths:
-        vector_key = f"direction_{direction_index:04d}"
+        vector_key = f"seed_{config.seed:04d}_direction_{direction_index:04d}"
+        intervention = ActivationAddition(
+            name=f"cmap_holdout_s{config.seed:04d}_d{direction_index:04d}_a{strength:g}",
+            layer=config.layer,
+            direction=torch.from_numpy(direction),
+            strength=strength,
+            token_scope=config.token_scope,
+        )
+        control_cost = intervention.control_cost(tokenizer)
+        parameters = {
+            **intervention.parameters(),
+            "algorithm": "cmap",
+            "direction_index": direction_index,
+            "vector_key": vector_key,
+        }
         for reference in eligible_holdout:
-            intervention = ActivationAddition(
-                name=f"cmap_holdout_d{direction_index:04d}_a{strength:g}",
-                layer=config.layer,
-                direction=torch.from_numpy(direction),
-                strength=strength,
-                token_scope=config.token_scope,
-            )
             prepared, output, states, _, execution = run_and_capture(
                 model,
                 tokenizer,
@@ -649,6 +673,7 @@ def discover_controllability_manifold(
                 generation,
                 pooling="last",
                 max_length=max_length,
+                store_token_states=False,
             )
             record = _record(
                 model,
@@ -661,10 +686,11 @@ def discover_controllability_manifold(
             preserved, verdicts = behavior_gate.evaluate(
                 reference.record,
                 record,
-                control_cost=intervention.control_cost(tokenizer),
+                control_cost=control_cost,
             )
             state = states[config.layer]
             displacement = state - reference.state
+            displacement_norm = float(np.linalg.norm(displacement))
             holdout_queries += 1
             metrics = _metrics(
                 record,
@@ -678,7 +704,7 @@ def discover_controllability_manifold(
                     "cmap_direction_index": float(direction_index),
                     "cmap_query_index": float(holdout_queries),
                     "cmap_proposal_uncertainty": novelty,
-                    "state_displacement": float(np.linalg.norm(displacement)),
+                    "state_displacement": displacement_norm,
                 }
             )
             result.samples.append(
@@ -689,13 +715,8 @@ def discover_controllability_manifold(
                     intervention=InterventionMetadata(
                         name=intervention.name,
                         channel=ControlChannel.ACTIVATION,
-                        control_cost=intervention.control_cost(tokenizer),
-                        parameters={
-                            **intervention.parameters(),
-                            "algorithm": "cmap",
-                            "direction_index": direction_index,
-                            "vector_key": vector_key,
-                        },
+                        control_cost=control_cost,
+                        parameters=parameters,
                     ),
                     state=state,
                     prompt=prepared,
@@ -713,6 +734,7 @@ def discover_controllability_manifold(
                 {
                     "model_name": model_name,
                     "layer": config.layer,
+                    "seed": config.seed,
                     "role": "test",
                     "example_id": reference.example_id,
                     "direction_index": direction_index,
@@ -721,7 +743,7 @@ def discover_controllability_manifold(
                     "proposal_uncertainty": novelty,
                     "acquisition_score": float("nan"),
                     "behavior_preserved": int(preserved),
-                    "state_displacement": float(np.linalg.norm(displacement)),
+                    "state_displacement": displacement_norm,
                     "binding_constraints": ";".join(
                         sorted(name for name, value in verdicts.items() if not value.passed)
                     ),
@@ -749,10 +771,12 @@ def discover_controllability_manifold(
             else np.empty((0, explorer.width), dtype=np.float64)
         )
         norms = np.linalg.norm(matrix, axis=1) if matrix.size else np.empty(0)
+        spectrum = spectral_metrics(matrix, center=False)
         result.summary_rows.append(
             {
                 "model_name": model_name,
                 "layer": config.layer,
+                "seed": config.seed,
                 "role": role,
                 "n_examples": len(references),
                 "n_eligible_examples": sum(reference.eligible for reference in references),
@@ -763,8 +787,8 @@ def discover_controllability_manifold(
                     if role_queries
                     else float("nan")
                 ),
-                "effective_rank": effective_rank(matrix, center=False),
-                "participation_ratio": participation_ratio(matrix, center=False),
+                "effective_rank": spectrum["effective_rank"],
+                "participation_ratio": spectrum["participation_ratio"],
                 "maximum_state_displacement": float(norms.max()) if norms.size else 0.0,
                 "mean_boundary_lower": (
                     float(np.mean([strength for _, strength, _, _ in accepted_strengths]))

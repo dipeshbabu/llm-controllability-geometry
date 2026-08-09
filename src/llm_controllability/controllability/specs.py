@@ -22,6 +22,7 @@ def export_prompt_controls(
     methods: Sequence[str] | None = None,
     top_n: int = 32,
     minimize: bool = True,
+    balance_seeds: bool = True,
 ) -> list[str]:
     records = records_from_csv(records_path)
     if target_name is not None:
@@ -29,28 +30,64 @@ def export_prompt_controls(
     if methods is not None:
         allowed = set(methods)
         records = [record for record in records if record.method in allowed]
-    frontier = pareto_frontier(records, minimize=minimize)
-    ranked = sorted(
-        frontier,
-        key=lambda record: (
-            record.target if minimize else -record.target,
-            record.xentropy,
-        ),
-    )
-    texts = []
+    def ranked(group):
+        return sorted(
+            pareto_frontier(group, minimize=minimize),
+            key=lambda record: (
+                record.target if minimize else -record.target,
+                record.xentropy,
+            ),
+        )
+
+    if balance_seeds:
+        by_seed = {
+            seed: ranked([record for record in records if record.seed == seed])
+            for seed in sorted({record.seed for record in records})
+        }
+        candidates = []
+        for rank in range(max((len(group) for group in by_seed.values()), default=0)):
+            candidates.extend(
+                group[rank]
+                for group in by_seed.values()
+                if rank < len(group)
+            )
+    else:
+        candidates = ranked(records)
+
+    selected = []
     seen = set()
-    for record in ranked:
+    for record in candidates:
         text = " ".join(record.text.split())
         if text and text not in seen:
-            texts.append(text)
+            selected.append((text, record))
             seen.add(text)
-        if len(texts) >= top_n:
+        if len(selected) >= top_n:
             break
+    texts = [text for text, _ in selected]
     if not texts:
         raise ValueError("no prompt controls matched the requested filters")
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(texts) + "\n", encoding="utf-8")
+    provenance_path = out_path.with_name(f"{out_path.name}.provenance.json")
+    provenance_path.write_text(
+        json.dumps(
+            [
+                {
+                    "text": text,
+                    "seed": record.seed,
+                    "method": record.method,
+                    "target_name": record.target_name,
+                    "target": record.target,
+                    "xentropy": record.xentropy,
+                }
+                for text, record in selected
+            ],
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     return texts
 
 
@@ -85,6 +122,11 @@ def export_bidirectional_prompt_controls(
         top_n=top_n_per_direction,
         minimize=False,
     )
+    provenance = {}
+    for path in (decrease_path, increase_path):
+        metadata_path = path.with_name(f"{path.name}.provenance.json")
+        for row in json.loads(metadata_path.read_text(encoding="utf-8")):
+            provenance[row["text"]] = row
     combined = []
     seen = set()
     for index in range(max(len(decrease), len(increase))):
@@ -94,6 +136,10 @@ def export_bidirectional_prompt_controls(
                 seen.add(values[index])
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(combined) + "\n", encoding="utf-8")
+    out_path.with_name(f"{out_path.name}.provenance.json").write_text(
+        json.dumps([provenance[text] for text in combined], indent=2) + "\n",
+        encoding="utf-8",
+    )
     return combined
 
 
@@ -176,6 +222,7 @@ def build_study_spec(
     cmap_query_budget: int = 512,
     cmap_validation_examples: int = 8,
     cmap_test_examples: int = 16,
+    cmap_seeds: Sequence[int] | None = None,
     seed: int = 0,
 ) -> dict:
     out_path = Path(out_path)
@@ -344,6 +391,11 @@ def build_study_spec(
         "seed": seed,
     }
     if cmap_direction_budget > 0:
+        selected_cmap_seeds = list(
+            dict.fromkeys(int(value) for value in (cmap_seeds or [seed]))
+        )
+        if not selected_cmap_seeds:
+            raise ValueError("cmap_seeds must not be empty")
         spec["cmap"] = {
             "enabled": True,
             "layer": layer,
@@ -365,6 +417,7 @@ def build_study_spec(
             "stagnation_patience": 2,
             "token_scope": "last",
             "seed": seed,
+            "seeds": selected_cmap_seeds,
         }
     if semantic_model is not None:
         spec["constraints"]["semantic"] = {

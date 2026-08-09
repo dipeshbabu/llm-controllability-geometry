@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import csv
 import json
-import random
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -587,7 +586,15 @@ def run_causal_study(
         activation_prefix=activation_prefix,
         target_metric=target_metric,
     )
-    random.Random(seed).shuffle(pairs)
+    pairs.sort(
+        key=lambda pair: (
+            abs(
+                float(pair[0].metrics[target_metric])
+                - float(pair[1].metrics[target_metric])
+            ),
+            pair[0].example_id,
+        )
+    )
     pairs = pairs[:max_pairs]
     if not pairs:
         raise ValueError("no matched behavior-preserving control pairs were found")
@@ -595,7 +602,6 @@ def run_causal_study(
         samples,
         selection_layer=selection_layer,
     )
-    random.Random(seed + 1).shuffle(prompt_pairs)
     prompt_pairs = prompt_pairs[:max_pairs]
 
     model_config = spec["model"]
@@ -864,6 +870,7 @@ def run_causal_study(
         "prompt_prefix": prompt_prefix,
         "activation_prefix": activation_prefix,
         "target_metric": target_metric,
+        "selection_policy": "closest_target_match_then_example_id",
         "artifacts": [
             "patching.csv",
             "component_ablation.csv",

@@ -66,6 +66,25 @@ def _write_csv(rows: Sequence[Mapping[str, Any]], path: Path) -> None:
         writer.writerows(rows)
 
 
+def _validate_seed_rows(
+    rows: Sequence[Mapping[str, Any]],
+    expected_seeds: set[int],
+    *,
+    artifact: Path,
+) -> None:
+    if not expected_seeds:
+        return
+    observed = {
+        int(row["seed"])
+        for row in rows
+        if row.get("seed") not in (None, "")
+    }
+    if observed != expected_seeds:
+        raise ValueError(
+            f"artifact {artifact} has seeds {sorted(observed)}, expected {sorted(expected_seeds)}"
+        )
+
+
 def _metric_summaries(
     tables: Mapping[str, Sequence[Mapping[str, Any]]],
 ) -> list[dict[str, Any]]:
@@ -299,6 +318,7 @@ def aggregate_matrix(
     run_root = Path(run_root)
     matrix = json.loads(Path(matrix_path).read_text(encoding="utf-8"))
     models = matrix["models"]
+    expected_seeds = {int(value) for value in matrix.get("expected_seeds", [])}
     slugs = [str(model["slug"]) for model in models]
     if len(slugs) != len(set(slugs)):
         raise ValueError("matrix slugs must be unique")
@@ -343,8 +363,41 @@ def aggregate_matrix(
                 "uv_lock_sha256": manifest.get("runtime", {}).get("uv_lock_sha256"),
             }
         )
+        if expected_seeds:
+            candidate_path = run_dir / "prompt_search" / "candidates.csv"
+            _validate_seed_rows(
+                _read_csv(candidate_path),
+                expected_seeds,
+                artifact=candidate_path,
+            )
+            provenance_path = (
+                run_dir / "optimized_prompt_controls.txt.provenance.json"
+            )
+            if not provenance_path.exists():
+                raise FileNotFoundError(
+                    f"missing prompt seed provenance: {provenance_path}"
+                )
+            provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
+            _validate_seed_rows(
+                provenance,
+                expected_seeds,
+                artifact=provenance_path,
+            )
         for name, relative in _TABLES.items():
-            for row in _read_csv(run_dir / relative):
+            artifact_path = run_dir / relative
+            artifact_rows = _read_csv(artifact_path)
+            if name in {
+                "cmap_summary",
+                "jacobians",
+                "monitor_invariance",
+                "monitor_comparisons",
+            }:
+                _validate_seed_rows(
+                    artifact_rows,
+                    expected_seeds,
+                    artifact=artifact_path,
+                )
+            for row in artifact_rows:
                 combined[name].append(
                     {
                         "slug": slug,

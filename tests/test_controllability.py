@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 import numpy as np
 import torch
@@ -42,11 +43,16 @@ from llm_controllability.evaluation.discovery import (
     scaling_replication_rows,
 )
 from llm_controllability.evaluation.jacobian_study import finite_difference_jacobians
-from llm_controllability.evaluation.matrix import _TABLES, aggregate_matrix
+from llm_controllability.evaluation.matrix import (
+    _TABLES,
+    _validate_seed_rows,
+    aggregate_matrix,
+)
 from llm_controllability.evaluation.monitor_study import (
     _partition_ids,
     _split_ids,
     paired_monitor_comparisons,
+    run_monitor_study,
 )
 from llm_controllability.evaluation.statistics import adjust_pvalues
 from llm_controllability.evaluation.transfer_study import transfer_rows
@@ -62,12 +68,13 @@ from llm_controllability.monitors import (
     pool_hidden_states,
 )
 from llm_controllability.optimization.contextual import ContextualTargetRunner
-from llm_controllability.optimization.epo import token_grads
+from llm_controllability.optimization.epo import GradientSelector, token_grads
 from llm_controllability.reachability import (
     ActiveTangentExplorer,
     CMapConfig,
     adaptive_control_boundary,
     boundary_survival_rows,
+    connectivity,
     control_jacobian,
     controllability_atlas_rows,
     controllability_boundary_rows,
@@ -80,6 +87,7 @@ from llm_controllability.reachability import (
     phase_transition_candidate_rows,
     principal_angles,
     save_state_samples,
+    spectral_metrics,
     split_half_stability_rows,
     subspace_overlap,
     summarize_controllability_boundaries,
@@ -153,6 +161,7 @@ class ReplayModel(torch.nn.Module):
         self.embedding = torch.nn.Embedding(16, 2)
         torch.nn.init.zeros_(self.embedding.weight)
         self.model = DummyBackbone()
+        self.generation_layer_hook_counts = []
 
     def get_input_embeddings(self):
         return self.embedding
@@ -171,6 +180,9 @@ class ReplayModel(torch.nn.Module):
     def generate(self, input_ids, attention_mask=None, **kwargs):
         generated = input_ids
         for token in (3, 4):
+            self.generation_layer_hook_counts.append(
+                len(self.model.layers[0]._forward_hooks)
+            )
             self(
                 input_ids=generated,
                 attention_mask=torch.ones_like(generated),
@@ -271,6 +283,8 @@ class ControllabilityTests(unittest.TestCase):
         self.assertEqual(len(result.directions), 1)
         self.assertEqual({row["role"] for row in result.summary_rows}, {"validation", "test"})
         self.assertEqual({row["role"] for row in result.query_rows}, {"validation", "test"})
+        self.assertEqual({row["seed"] for row in result.summary_rows}, {3})
+        self.assertEqual({row["seed"] for row in result.query_rows}, {3})
         self.assertTrue(all(sample.behavior_preserved for sample in result.samples))
 
     def test_cmap_expands_unexplored_tangent_and_brackets_boundary(self):
@@ -309,6 +323,110 @@ class ControllabilityTests(unittest.TestCase):
         self.assertEqual(boundary.status, "bracketed")
         self.assertEqual(boundary.lower, 3.0)
         self.assertEqual(boundary.upper, 3.5)
+
+    def test_tangent_basis_is_cached_until_an_accepted_observation(self):
+        explorer = ActiveTangentExplorer(4, CMapConfig(layer=0), seed=0)
+        explorer.observe(np.array([1.0, 0.0, 0.0, 0.0]), preserved=True)
+
+        with mock.patch(
+            "llm_controllability.reachability.cmap.np.linalg.svd",
+            wraps=np.linalg.svd,
+        ) as svd:
+            self.assertEqual(explorer.rank, 1)
+            self.assertEqual(explorer.rank, 1)
+            explorer.tangent_basis()
+
+        self.assertEqual(svd.call_count, 1)
+
+    def test_spectral_metrics_share_one_decomposition(self):
+        values = np.asarray([[1.0, 0.0], [0.0, 2.0]])
+
+        with mock.patch(
+            "llm_controllability.reachability.geometry.np.linalg.svd",
+            wraps=np.linalg.svd,
+        ) as svd:
+            metrics = spectral_metrics(values, center=False)
+
+        self.assertEqual(svd.call_count, 1)
+        self.assertEqual(metrics["numerical_rank"], 2)
+        self.assertGreater(metrics["effective_rank"], 1.0)
+
+    def test_connectivity_avoids_hidden_width_broadcast_norms(self):
+        values = np.asarray(
+            [[0.0, 0.0, 0.0], [0.1, 0.0, 0.0], [3.0, 0.0, 0.0]]
+        )
+
+        with mock.patch(
+            "llm_controllability.reachability.geometry.np.linalg.norm",
+            side_effect=AssertionError("connectivity should use the Gram matrix"),
+        ):
+            result = connectivity(values, radius=0.2)
+
+        self.assertEqual(result["n_components"], 2)
+
+    def test_gradient_mutation_scores_only_selected_allowed_tokens(self):
+        allowed = torch.zeros(6, dtype=torch.bool)
+        allowed[[2, 4]] = True
+        selector = GradientSelector(
+            None,
+            None,
+            torch.zeros(2),
+            1,
+            allowed_mask=allowed,
+        )
+        gradients = torch.zeros(2, 3, 6)
+        gradients[..., 4] = -10.0
+        gradients[..., 5] = -100.0
+        state = SimpleNamespace(token_grads=gradients)
+        children = torch.zeros(4, 3, dtype=torch.long)
+        source = torch.tensor([0, 0, 1, 1], dtype=torch.long)
+
+        torch.manual_seed(3)
+        selector.mutate(state, source, children, topk=1)
+
+        self.assertTrue(torch.all((children == 4).sum(dim=1) == 1))
+        self.assertFalse(torch.any(children == 5))
+
+    def test_monitor_study_preserves_seed_level_outputs(self):
+        def run_seed(states_dir, out_dir, **kwargs):
+            path = Path(out_dir)
+            path.mkdir(parents=True)
+            with (path / "monitor_scores.csv").open(
+                "w", encoding="utf-8", newline=""
+            ) as handle:
+                writer = csv.DictWriter(handle, fieldnames=["score"])
+                writer.writeheader()
+                writer.writerow({"score": kwargs["seed"]})
+            return {
+                "n_train_examples": 2,
+                "n_validation_examples": 2,
+                "n_test_examples": 2,
+                "n_score_rows": 1,
+                "n_invariance_rows": 0,
+                "n_ood_rows": 0,
+                "n_comparison_rows": 0,
+            }
+
+        with tempfile.TemporaryDirectory() as temp_dir, mock.patch(
+            "llm_controllability.evaluation.monitor_study._run_monitor_study_seed",
+            side_effect=run_seed,
+        ):
+            manifest = run_monitor_study("unused", temp_dir, seeds=[0, 1, 2])
+            with (Path(temp_dir) / "monitor_scores.csv").open(
+                "r", encoding="utf-8", newline=""
+            ) as handle:
+                rows = list(csv.DictReader(handle))
+
+        self.assertEqual(manifest["seeds"], [0, 1, 2])
+        self.assertEqual({int(row["seed"]) for row in rows}, {0, 1, 2})
+
+    def test_matrix_seed_validation_rejects_missing_runs(self):
+        with self.assertRaisesRegex(ValueError, r"expected \[0, 1, 2\]"):
+            _validate_seed_rows(
+                [{"seed": 0}, {"seed": 2}],
+                {0, 1, 2},
+                artifact=Path("results.csv"),
+            )
 
     def test_matrix_aggregation_requires_and_combines_declared_artifacts(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -804,6 +922,7 @@ class ControllabilityTests(unittest.TestCase):
         self.assertEqual(execution["generation_tracking_steps"], 2.0)
         self.assertAlmostEqual(float(states[0][0]), 3.0)
         self.assertEqual(token_states, {})
+        self.assertEqual(model.generation_layer_hook_counts, [1, 1])
 
         _, _, _, token_states, _ = run_and_capture(
             model,

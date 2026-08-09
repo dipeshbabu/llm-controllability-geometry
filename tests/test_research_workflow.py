@@ -278,6 +278,7 @@ class ResearchWorkflowTests(unittest.TestCase):
                 natural_controls_path=natural,
                 cmap_direction_budget=6,
                 cmap_query_budget=120,
+                cmap_seeds=[0, 1, 2],
             )
 
             activation = next(
@@ -304,6 +305,7 @@ class ResearchWorkflowTests(unittest.TestCase):
         self.assertEqual(spec["cmap"]["direction_budget"], 6)
         self.assertEqual(spec["cmap"]["query_budget"], 120)
         self.assertEqual(spec["cmap"]["layer"], 1)
+        self.assertEqual(spec["cmap"]["seeds"], [0, 1, 2])
         self.assertAlmostEqual(float(random_vector[1]), 0.0, places=6)
 
     def test_robustness_summary(self):

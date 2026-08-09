@@ -29,6 +29,46 @@ def singular_values(states: np.ndarray, *, center: bool = True) -> np.ndarray:
     return np.linalg.svd(values, full_matrices=False, compute_uv=False)
 
 
+def _spectral_metrics_from_values(
+    values: np.ndarray,
+    *,
+    relative_tolerance: float,
+) -> dict[str, float | int]:
+    if values.size == 0 or values[0] == 0:
+        return {
+            "numerical_rank": 0,
+            "effective_rank": 0.0,
+            "participation_ratio": 0.0,
+        }
+    spectrum = values**2
+    total = spectrum.sum()
+    probabilities = spectrum[spectrum > 0] / total
+    squared_spectrum_sum = np.square(spectrum).sum()
+    return {
+        "numerical_rank": int(
+            np.count_nonzero(values > values[0] * relative_tolerance)
+        ),
+        "effective_rank": float(
+            np.exp(-(probabilities * np.log(probabilities)).sum())
+        ),
+        "participation_ratio": float(total**2 / squared_spectrum_sum),
+    }
+
+
+def spectral_metrics(
+    states: np.ndarray,
+    *,
+    center: bool = True,
+    relative_tolerance: float = 1e-6,
+) -> dict[str, float | int]:
+    """Compute rank diagnostics from one singular-value decomposition."""
+
+    return _spectral_metrics_from_values(
+        singular_values(states, center=center),
+        relative_tolerance=relative_tolerance,
+    )
+
+
 def effective_rank(states: np.ndarray, *, center: bool = True) -> float:
     """Entropy effective rank based on the covariance spectrum."""
 
@@ -156,8 +196,23 @@ def connectivity(states: np.ndarray, radius: float) -> dict[str, float | int]:
     n_samples = values.shape[0]
     if n_samples == 0:
         return {"n_components": 0, "largest_component_fraction": 0.0}
-    distances = np.linalg.norm(values[:, None, :] - values[None, :, :], axis=-1)
-    adjacency = distances <= radius
+    distances = _pairwise_distances(values)
+    return _connectivity_from_distances(distances, radius)
+
+
+def _pairwise_distances(values: np.ndarray) -> np.ndarray:
+    squared_norms = np.einsum("ij,ij->i", values, values)
+    squared = squared_norms[:, None] + squared_norms[None, :] - 2.0 * (values @ values.T)
+    return np.sqrt(np.maximum(squared, 0.0))
+
+
+def _connectivity_from_distances(
+    distances: np.ndarray,
+    radius: float,
+) -> dict[str, float | int]:
+    n_samples = distances.shape[0]
+    if n_samples == 0:
+        return {"n_components": 0, "largest_component_fraction": 0.0}
     visited = np.zeros(n_samples, dtype=bool)
     sizes: list[int] = []
     for start in range(n_samples):
@@ -169,7 +224,7 @@ def connectivity(states: np.ndarray, radius: float) -> dict[str, float | int]:
         while stack:
             node = stack.pop()
             size += 1
-            neighbors = np.flatnonzero(adjacency[node] & ~visited)
+            neighbors = np.flatnonzero((distances[node] <= radius) & ~visited)
             visited[neighbors] = True
             stack.extend(neighbors.tolist())
         sizes.append(size)
@@ -225,15 +280,15 @@ def _geometry_row(
 ) -> dict[str, float | int | str]:
     norms = np.linalg.norm(displacements, axis=1) if displacements.size else np.empty(0)
     if displacements.shape[0] > 1:
-        distances = np.linalg.norm(
-            displacements[:, None, :] - displacements[None, :, :],
-            axis=-1,
-        )
+        distances = _pairwise_distances(displacements)
         np.fill_diagonal(distances, np.inf)
         radius = float(np.median(distances.min(axis=1)))
+        np.fill_diagonal(distances, 0.0)
+        graph = _connectivity_from_distances(distances, radius)
     else:
         radius = 0.0
-    graph = connectivity(displacements, radius)
+        graph = connectivity(displacements, radius)
+    spectrum = spectral_metrics(displacements, center=False)
     return {
         "model_name": model_name,
         "layer": layer,
@@ -241,9 +296,7 @@ def _geometry_row(
         "n_attempted": attempted,
         "n_preserved": preserved,
         "preservation_rate": preserved / attempted if attempted else float("nan"),
-        "numerical_rank": numerical_rank(displacements, center=False),
-        "effective_rank": effective_rank(displacements, center=False),
-        "participation_ratio": participation_ratio(displacements, center=False),
+        **spectrum,
         "mean_displacement": float(norms.mean()) if norms.size else float("nan"),
         "max_displacement": float(norms.max()) if norms.size else float("nan"),
         "connectivity_radius": radius,
@@ -336,6 +389,7 @@ def summarize_reachability(
 
     rows: list[dict[str, float | int | str]] = []
     for (model_name, layer), group in sorted(grouped.items()):
+        channel_displacements: dict[ControlChannel, np.ndarray] = {}
         for channel in (
             ControlChannel.PROMPT,
             ControlChannel.ACTIVATION,
@@ -348,6 +402,7 @@ def summarize_reachability(
                 for sample in group
             )
             displacements = baseline_displacements(group, channel=channel)
+            channel_displacements[channel] = displacements
             if attempted:
                 rows.append(
                     _geometry_row(
@@ -360,8 +415,8 @@ def summarize_reachability(
                     )
                 )
 
-        prompt = baseline_displacements(group, channel=ControlChannel.PROMPT)
-        activation = baseline_displacements(group, channel=ControlChannel.ACTIVATION)
+        prompt = channel_displacements[ControlChannel.PROMPT]
+        activation = channel_displacements[ControlChannel.ACTIVATION]
         if prompt.shape[0] and activation.shape[0]:
             rows.append(
                 {
@@ -487,6 +542,7 @@ def budget_growth(
                 ]
             )
             norms = np.linalg.norm(displacements, axis=1)
+            spectrum = spectral_metrics(displacements, center=False)
             rows.append(
                 {
                     "model_name": model_name,
@@ -495,14 +551,8 @@ def budget_growth(
                     "budget": float(budget),
                     "n_states": len(accepted),
                     "n_examples": len({sample.example_id for sample in accepted}),
-                    "effective_rank": effective_rank(
-                        displacements,
-                        center=False,
-                    ),
-                    "participation_ratio": participation_ratio(
-                        displacements,
-                        center=False,
-                    ),
+                    "effective_rank": spectrum["effective_rank"],
+                    "participation_ratio": spectrum["participation_ratio"],
                     "maximum_radius": float(norms.max()),
                     "mean_radius": float(norms.mean()),
                 }

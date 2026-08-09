@@ -8,6 +8,7 @@ import json
 import platform
 import subprocess
 from collections.abc import Mapping
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -536,33 +537,61 @@ def run_study(spec_path: str | Path, out_dir: str | Path) -> dict[str, Any]:
     cmap_values = spec.get("cmap")
     if cmap_values is not None and bool(cmap_values.get("enabled", False)):
         cmap_config = CMapConfig.from_mapping(cmap_values)
+        cmap_seeds = tuple(
+            dict.fromkeys(
+                int(seed) for seed in cmap_values.get("seeds", [cmap_config.seed])
+            )
+        )
+        if not cmap_seeds:
+            raise ValueError("C-MAP seeds must not be empty")
         validation_examples = [
             example for example in examples if example.get("split") == "validation"
         ]
         test_examples = [
             example for example in examples if example.get("split") == "test"
         ]
-        cmap_result = discover_controllability_manifold(
-            model,
-            tokenizer,
-            model_name=model_config["name"],
-            validation_examples=validation_examples,
-            test_examples=test_examples,
-            behavior_gate=gate,
-            generation=spec.get("generation", {}),
-            config=cmap_config,
-            max_length=int(spec.get("max_length", 2048)),
-            semantic_embedder=semantic_embedder,
-            target_direction=target_directions.get(cmap_config.layer),
-        )
-        save_state_samples(cmap_result.samples, out_dir / "cmap")
+        cmap_samples = []
+        cmap_queries = []
+        cmap_direction_rows = []
+        cmap_summary_rows = []
+        cmap_directions = {}
+        cmap_seed_manifests = []
+        for cmap_seed in cmap_seeds:
+            seed_config = replace(cmap_config, seed=cmap_seed)
+            cmap_result = discover_controllability_manifold(
+                model,
+                tokenizer,
+                model_name=model_config["name"],
+                validation_examples=validation_examples,
+                test_examples=test_examples,
+                behavior_gate=gate,
+                generation=spec.get("generation", {}),
+                config=seed_config,
+                max_length=int(spec.get("max_length", 2048)),
+                semantic_embedder=semantic_embedder,
+                target_direction=target_directions.get(seed_config.layer),
+            )
+            cmap_samples.extend(cmap_result.samples)
+            cmap_queries.extend(cmap_result.query_rows)
+            cmap_direction_rows.extend(cmap_result.direction_rows)
+            cmap_summary_rows.extend(cmap_result.summary_rows)
+            cmap_directions.update(cmap_result.directions)
+            cmap_seed_manifests.append(
+                {
+                    "seed": cmap_seed,
+                    "n_state_samples": len(cmap_result.samples),
+                    "n_queries": len(cmap_result.query_rows),
+                    "n_discovered_directions": len(cmap_result.directions),
+                }
+            )
+        save_state_samples(cmap_samples, out_dir / "cmap")
         np.savez_compressed(
             out_dir / "cmap_directions.npz",
-            **cmap_result.directions,
+            **cmap_directions,
         )
-        _write_csv(cmap_result.query_rows, out_dir / "cmap_queries.csv")
-        _write_csv(cmap_result.direction_rows, out_dir / "cmap_directions.csv")
-        _write_csv(cmap_result.summary_rows, out_dir / "cmap_summary.csv")
+        _write_csv(cmap_queries, out_dir / "cmap_queries.csv")
+        _write_csv(cmap_direction_rows, out_dir / "cmap_directions.csv")
+        _write_csv(cmap_summary_rows, out_dir / "cmap_summary.csv")
         cmap_artifacts = [
             "cmap/states.npz",
             "cmap/samples.jsonl",
@@ -577,9 +606,11 @@ def run_study(spec_path: str | Path, out_dir: str | Path) -> dict[str, Any]:
                 for key, value in cmap_values.items()
                 if key != "enabled"
             },
-            "n_state_samples": len(cmap_result.samples),
-            "n_queries": len(cmap_result.query_rows),
-            "n_discovered_directions": len(cmap_result.directions),
+            "seeds": list(cmap_seeds),
+            "seed_runs": cmap_seed_manifests,
+            "n_state_samples": len(cmap_samples),
+            "n_queries": len(cmap_queries),
+            "n_discovered_directions": len(cmap_directions),
         }
     manifest = {
         "spec": str(spec_path),

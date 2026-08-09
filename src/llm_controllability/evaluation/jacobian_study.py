@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import json
 import random
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -178,6 +179,81 @@ def finite_difference_jacobians(
     return {layer: np.stack(values, axis=1) for layer, values in columns.items()}
 
 
+def _evaluate_jacobian_seed(
+    model: torch.nn.Module,
+    tokenizer,
+    examples: Sequence[dict[str, Any]],
+    *,
+    model_name: str,
+    injection_layer: int,
+    capture_layers: list[int],
+    basis: torch.Tensor,
+    dimensions: list[int],
+    example_limit: int,
+    max_length: int,
+    epsilon: float,
+    seed: int,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    selected_examples = list(examples)
+    random.Random(seed).shuffle(selected_examples)
+    selected_examples = selected_examples[:example_limit]
+    rows = []
+    spectrum_rows = []
+    for index, example in enumerate(selected_examples):
+        example_id = str(example.get("id", index))
+        model_inputs = tokenize_prompts(
+            tokenizer,
+            str(example["prompt"]),
+            return_tensors="pt",
+            truncation=True,
+            max_length=max_length,
+        ).to(model_device(model))
+        jacobians = finite_difference_jacobians(
+            model,
+            dict(model_inputs),
+            injection_layer=injection_layer,
+            capture_layers=capture_layers,
+            basis=basis,
+            epsilon=epsilon,
+        )
+        for layer, full_jacobian in jacobians.items():
+            for dimension in dimensions:
+                jacobian = full_jacobian[:, :dimension]
+                singular = np.linalg.svd(jacobian, compute_uv=False)
+                summary = local_controllability(
+                    jacobian,
+                    singular_values=singular,
+                )
+                rows.append(
+                    {
+                        "model_name": model_name,
+                        "example_id": example_id,
+                        "seed": seed,
+                        "injection_layer": injection_layer,
+                        "capture_layer": layer,
+                        "control_dimension": dimension,
+                        "epsilon": epsilon,
+                        **summary,
+                        "rank_fraction": float(summary["rank"]) / dimension,
+                        "squared_gain": float(np.square(singular).sum()),
+                    }
+                )
+                spectrum_rows.extend(
+                    {
+                        "model_name": model_name,
+                        "example_id": example_id,
+                        "seed": seed,
+                        "injection_layer": injection_layer,
+                        "capture_layer": layer,
+                        "control_dimension": dimension,
+                        "component": component,
+                        "singular_value": float(singular_value),
+                    }
+                    for component, singular_value in enumerate(singular)
+                )
+    return rows, spectrum_rows
+
+
 def run_jacobian_study(
     spec_path: str | Path,
     out_path: str | Path,
@@ -186,6 +262,7 @@ def run_jacobian_study(
     epsilon: float = 0.25,
     basis_dimensions: tuple[int, ...] = (8, 16, 32),
     seed: int = 0,
+    seeds: Sequence[int] | None = None,
 ) -> dict[str, Any]:
     spec_path = Path(spec_path)
     base_dir = spec_path.resolve().parent
@@ -193,18 +270,27 @@ def run_jacobian_study(
     dimensions = sorted({int(value) for value in basis_dimensions})
     if not dimensions or dimensions[0] <= 0:
         raise ValueError("basis_dimensions must contain positive integers")
-    injection_layer, basis = _load_basis(
-        spec,
-        base_dir,
-        dimension=dimensions[-1],
-        seed=seed,
-    )
+    seed_values = tuple(dict.fromkeys(int(value) for value in (seeds or [seed])))
+    if not seed_values:
+        raise ValueError("Jacobian seeds must not be empty")
+    bases = {}
+    injection_layer = None
+    for value in seed_values:
+        current_layer, basis = _load_basis(
+            spec,
+            base_dir,
+            dimension=dimensions[-1],
+            seed=value,
+        )
+        if injection_layer is not None and current_layer != injection_layer:
+            raise ValueError("Jacobian injection layer changed across seeds")
+        injection_layer = current_layer
+        bases[value] = basis
+    assert injection_layer is not None
     capture_layers = [int(layer) for layer in spec["layers"]]
     examples = load_examples(_resolve(spec["data"]["path"], base_dir))
     if any(example.get("split") == "test" for example in examples):
         examples = [example for example in examples if example.get("split") == "test"]
-    random.Random(seed).shuffle(examples)
-    examples = examples[:example_limit]
 
     model_config = spec["model"]
     dtype = {
@@ -229,52 +315,23 @@ def run_jacobian_study(
 
     rows = []
     spectrum_rows = []
-    for index, example in enumerate(examples):
-        example_id = str(example.get("id", index))
-        model_inputs = tokenize_prompts(
-            tokenizer,
-            str(example["prompt"]),
-            return_tensors="pt",
-            truncation=True,
-            max_length=int(spec.get("max_length", 2048)),
-        ).to(model_device(model))
-        jacobians = finite_difference_jacobians(
+    for value in seed_values:
+        seed_rows, seed_spectrum_rows = _evaluate_jacobian_seed(
             model,
-            dict(model_inputs),
+            tokenizer,
+            examples,
+            model_name=model_config["name"],
             injection_layer=injection_layer,
             capture_layers=capture_layers,
-            basis=basis,
+            basis=bases[value],
+            dimensions=dimensions,
+            example_limit=example_limit,
+            max_length=int(spec.get("max_length", 2048)),
             epsilon=epsilon,
+            seed=value,
         )
-        for layer, full_jacobian in jacobians.items():
-            for dimension in dimensions:
-                jacobian = full_jacobian[:, :dimension]
-                summary = local_controllability(jacobian)
-                singular = np.linalg.svd(jacobian, compute_uv=False)
-                row = {
-                    "model_name": model_config["name"],
-                    "example_id": example_id,
-                    "injection_layer": injection_layer,
-                    "capture_layer": layer,
-                    "control_dimension": dimension,
-                    "epsilon": epsilon,
-                    **summary,
-                    "rank_fraction": float(summary["rank"]) / dimension,
-                    "squared_gain": float(np.square(singular).sum()),
-                }
-                rows.append(row)
-                for component, singular_value in enumerate(singular):
-                    spectrum_rows.append(
-                        {
-                            "model_name": model_config["name"],
-                            "example_id": example_id,
-                            "injection_layer": injection_layer,
-                            "capture_layer": layer,
-                            "control_dimension": dimension,
-                            "component": component,
-                            "singular_value": float(singular_value),
-                        }
-                    )
+        rows.extend(seed_rows)
+        spectrum_rows.extend(seed_spectrum_rows)
 
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -293,22 +350,28 @@ def run_jacobian_study(
             writer.writerows(spectrum_rows)
     else:
         spectrum_path.write_text("", encoding="utf-8")
-    basis_path = out_path.with_name(f"{out_path.stem}_control_basis.npy")
-    np.save(basis_path, basis.detach().cpu().numpy())
+    basis_paths = []
+    for value, basis in bases.items():
+        basis_path = out_path.with_name(
+            f"{out_path.stem}_control_basis_seed_{value}.npy"
+        )
+        np.save(basis_path, basis.detach().cpu().numpy())
+        basis_paths.append(str(basis_path))
     manifest = {
         "model": model_config["name"],
         "injection_layer": injection_layer,
         "capture_layers": capture_layers,
         "control_dimensions": dimensions,
-        "maximum_control_dimension": int(basis.shape[0]),
+        "maximum_control_dimension": dimensions[-1],
         "basis_construction": "target_then_declared_orthogonal_then_seeded_gram_schmidt",
+        "seeds": list(seed_values),
         "epsilon": epsilon,
-        "n_examples": len(examples),
+        "n_examples_per_seed": min(len(examples), example_limit),
         "n_rows": len(rows),
         "n_spectrum_rows": len(spectrum_rows),
         "artifact": str(out_path),
         "spectrum_artifact": str(spectrum_path),
-        "basis_artifact": str(basis_path),
+        "basis_artifacts": basis_paths,
     }
     out_path.with_suffix(".manifest.json").write_text(
         json.dumps(manifest, indent=2) + "\n",

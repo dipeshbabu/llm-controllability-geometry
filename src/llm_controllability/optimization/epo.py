@@ -296,17 +296,8 @@ def epo(
             # 2) Birth children from parents
             # copy inputs to expand out to explore_size new candidates.
             ########################################
-            source_idx = torch.cat(
-                (
-                    torch.arange(state.ids.shape[0], device=device).repeat(
-                        explore_size // state.ids.shape[0]
-                    ),
-                    torch.arange(explore_size %
-                                 state.ids.shape[0], device=device),
-                )
-            )
+            source_idx = torch.arange(explore_size, device=device) % state.ids.shape[0]
             assert source_idx.shape[0] == explore_size
-            assert (source_idx < state.ids.shape[0]).all()
 
             new_ids = state.ids[source_idx, :].clone()
 
@@ -772,6 +763,9 @@ class Selector:
         self.X = X
         self.batch_size = batch_size
         self.allowed_mask = allowed_mask
+        self.allowed_count = int(allowed_mask.sum())
+        if self.allowed_count <= 0:
+            raise ValueError("allowed token mask must contain at least one token")
 
 
 class GradientSelector(Selector):
@@ -787,27 +781,43 @@ class GradientSelector(Selector):
         )
 
     def mutate(self, state, source_idx, input_ids, topk):
-        # when just flipping, the current token gradient falls out of the
-        # topk operation, so we can just use the negative new token grad
-        scores = -state.token_grads
-        scores[..., ~self.allowed_mask] = -torch.inf
-        candidate_count = min(topk, int(self.allowed_mask.sum()))
-        topk_grad = scores.topk(k=candidate_count, dim=-1)
+        # Only score parent-position pairs that are actually mutated. Materializing
+        # scores for every position duplicates the full vocabulary-gradient tensor.
         pos = torch.randint(
             low=0,
             high=input_ids.shape[1],
             size=(input_ids.shape[0],),
             device=input_ids.device,
         )
+        source_cpu = source_idx.detach().to(device="cpu", dtype=torch.long)
+        pos_cpu = pos.detach().to(device="cpu", dtype=torch.long)
+        pair_keys = source_cpu * input_ids.shape[1] + pos_cpu
+        unique_keys, inverse = torch.unique(
+            pair_keys,
+            sorted=True,
+            return_inverse=True,
+        )
+        parent_indices = torch.div(
+            unique_keys,
+            input_ids.shape[1],
+            rounding_mode="floor",
+        )
+        positions = unique_keys % input_ids.shape[1]
+        scores = -state.token_grads[parent_indices, positions]
+        scores[:, ~self.allowed_mask] = -torch.inf
+        candidate_count = min(topk, self.allowed_count)
+        topk_indices = scores.topk(k=candidate_count, dim=-1).indices
         token_idx = torch.randint(
             low=0,
             high=candidate_count,
             size=(input_ids.shape[0],),
             device=input_ids.device,
         )
-        input_ids[torch.arange(input_ids.shape[0]), pos] = topk_grad.indices.to(
-            input_ids.device
-        )[source_idx, pos, token_idx]
+        selected = topk_indices[
+            inverse,
+            token_idx.detach().to(device="cpu", dtype=torch.long),
+        ].to(input_ids.device)
+        input_ids[torch.arange(input_ids.shape[0], device=input_ids.device), pos] = selected
 
 
 def pareto_callback(cache_run, model, tokenizer, x_penalty_min, x_penalty_max):

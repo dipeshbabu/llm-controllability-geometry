@@ -210,8 +210,18 @@ class ActivationAddition(Intervention):
     token_scope: TokenScope = "last"
     normalize_direction: bool = True
     channel: ControlChannel = ControlChannel.ACTIVATION
+    _cached_vector: torch.Tensor | None = field(default=None, init=False, repr=False, compare=False)
+    _cached_vector_key: tuple[torch.device, torch.dtype, int] | None = field(
+        default=None,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     def _vector(self, hidden: torch.Tensor) -> torch.Tensor:
+        key = (hidden.device, hidden.dtype, hidden.shape[-1])
+        if self._cached_vector is not None and self._cached_vector_key == key:
+            return self._cached_vector
         vector = self.direction.to(device=hidden.device, dtype=hidden.dtype).reshape(-1)
         if vector.shape[0] != hidden.shape[-1]:
             raise ValueError(
@@ -219,7 +229,9 @@ class ActivationAddition(Intervention):
             )
         if self.normalize_direction:
             vector = vector / vector.float().norm().clamp_min(1e-12).to(vector.dtype)
-        return vector
+        self._cached_vector = vector
+        self._cached_vector_key = key
+        return self._cached_vector
 
     @contextlib.contextmanager
     def apply(self, model: torch.nn.Module) -> Iterator[None]:
@@ -262,10 +274,32 @@ class DirectionalAblation(Intervention):
     fraction: float = 1.0
     token_scope: TokenScope = "last"
     channel: ControlChannel = field(default=ControlChannel.ACTIVATION, init=False)
+    _cached_vector: torch.Tensor | None = field(default=None, init=False, repr=False, compare=False)
+    _cached_vector_key: tuple[torch.device, torch.dtype, int] | None = field(
+        default=None,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
         if not 0.0 <= self.fraction <= 1.0:
             raise ValueError("fraction must lie in [0, 1]")
+
+    def _vector(self, hidden: torch.Tensor) -> torch.Tensor:
+        key = (hidden.device, hidden.dtype, hidden.shape[-1])
+        if self._cached_vector is not None and self._cached_vector_key == key:
+            return self._cached_vector
+        vector = self.direction.to(device=hidden.device, dtype=hidden.dtype).reshape(-1)
+        if vector.shape[0] != hidden.shape[-1]:
+            raise ValueError(
+                f"direction width {vector.shape[0]} does not match hidden width {hidden.shape[-1]}"
+            )
+        self._cached_vector = (
+            vector / vector.float().norm().clamp_min(1e-12).to(vector.dtype)
+        )
+        self._cached_vector_key = key
+        return self._cached_vector
 
     @contextlib.contextmanager
     def apply(self, model: torch.nn.Module) -> Iterator[None]:
@@ -274,8 +308,7 @@ class DirectionalAblation(Intervention):
         def hook(module, inputs, output):
             hidden = _hidden_from_output(output)
             selected, restore = _selected(hidden, self.token_scope)
-            vector = self.direction.to(device=hidden.device, dtype=hidden.dtype).reshape(-1)
-            vector = vector / vector.float().norm().clamp_min(1e-12).to(vector.dtype)
+            vector = self._vector(hidden)
             projection = torch.einsum("btd,d->bt", selected, vector).unsqueeze(-1)
             updated = selected - self.fraction * projection * vector.view(1, 1, -1)
             return _replace_hidden(output, restore(updated))
@@ -319,6 +352,13 @@ class AdaptiveActivationController(Intervention):
     _tracking_error_final: torch.Tensor | None = field(default=None, init=False, repr=False)
     _update_sum: torch.Tensor | None = field(default=None, init=False, repr=False)
     _tracking_steps: int = field(default=0, init=False, repr=False)
+    _cached_vector: torch.Tensor | None = field(default=None, init=False, repr=False, compare=False)
+    _cached_vector_key: tuple[torch.device, torch.dtype, int] | None = field(
+        default=None,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     def reset(self) -> None:
         self._integral = None
@@ -330,6 +370,21 @@ class AdaptiveActivationController(Intervention):
         self._update_sum = None
         self._tracking_steps = 0
 
+    def _vector(self, hidden: torch.Tensor) -> torch.Tensor:
+        key = (hidden.device, hidden.dtype, hidden.shape[-1])
+        if self._cached_vector is not None and self._cached_vector_key == key:
+            return self._cached_vector
+        vector = self.direction.to(device=hidden.device, dtype=hidden.dtype).reshape(-1)
+        if vector.shape[0] != hidden.shape[-1]:
+            raise ValueError(
+                f"direction width {vector.shape[0]} does not match hidden width {hidden.shape[-1]}"
+            )
+        self._cached_vector = (
+            vector / vector.float().norm().clamp_min(1e-12).to(vector.dtype)
+        )
+        self._cached_vector_key = key
+        return self._cached_vector
+
     @contextlib.contextmanager
     def apply(self, model: torch.nn.Module) -> Iterator[None]:
         block = get_layers(model)[self.layer]
@@ -337,8 +392,7 @@ class AdaptiveActivationController(Intervention):
         def hook(module, inputs, output):
             hidden = _hidden_from_output(output)
             selected, restore = _selected(hidden, self.token_scope)
-            vector = self.direction.to(device=hidden.device, dtype=hidden.dtype).reshape(-1)
-            vector = vector / vector.float().norm().clamp_min(1e-12).to(vector.dtype)
+            vector = self._vector(hidden)
             projection = torch.einsum("btd,d->bt", selected, vector)
             error = self.setpoint - projection
 

@@ -10,10 +10,7 @@ from typing import Any
 import numpy as np
 
 from llm_controllability.controllability.types import ControlChannel, StateSample
-from llm_controllability.reachability.geometry import (
-    effective_rank,
-    participation_ratio,
-)
+from llm_controllability.reachability.geometry import spectral_metrics
 
 _NUMERIC_PARAMETERS = (
     ("strength", "_a"),
@@ -102,6 +99,7 @@ def controllability_atlas_rows(
             else np.empty((0, group[0].state.shape[0]), dtype=np.float64)
         )
         norms = np.linalg.norm(matrix, axis=1) if matrix.size else np.empty(0)
+        spectrum = spectral_metrics(matrix, center=False)
         depth_denominator = max(maximum_layer[model_name], 1)
         rows.append(
             {
@@ -119,8 +117,8 @@ def controllability_atlas_rows(
                 "controlled_example_rate": (
                     len(controlled_examples) / len(attempted_examples)
                 ),
-                "effective_rank": effective_rank(matrix, center=False),
-                "participation_ratio": participation_ratio(matrix, center=False),
+                "effective_rank": spectrum["effective_rank"],
+                "participation_ratio": spectrum["participation_ratio"],
                 "mean_state_displacement": (
                     float(norms.mean()) if norms.size else float("nan")
                 ),

@@ -96,7 +96,7 @@ case "${PROTOCOL}" in
     ;;
   scaling)
     METHODS=${METHODS:-"epo gcg"}
-    DEFAULT_SEEDS="0 1 2"
+    DEFAULT_SEEDS="0 1 2 3 4"
     DEFAULT_CONTEXT_COUNT=8
     DEFAULT_EXAMPLE_LIMIT=128
     DEFAULT_CMAP_DIRECTIONS=4
@@ -215,7 +215,8 @@ uv run llm-controllability build-study-spec \
   --cmap-directions "${CMAP_DIRECTIONS}" \
   --cmap-query-budget "${CMAP_QUERY_BUDGET}" \
   --cmap-validation-examples "${CMAP_VALIDATION_EXAMPLES}" \
-  --cmap-test-examples "${CMAP_TEST_EXAMPLES}"
+  --cmap-test-examples "${CMAP_TEST_EXAMPLES}" \
+  --cmap-seeds "${SEED_ARGS[@]}"
 
 uv run llm-controllability collect-reachable \
   --spec "${STUDY_SPEC}" \
@@ -234,7 +235,7 @@ uv run llm-controllability analyze-jacobians \
   --example-limit "${JACOBIAN_EXAMPLE_LIMIT}" \
   --epsilon 0.25 \
   --basis-dimensions 8 16 32 \
-  --seed 0
+  --seeds "${SEED_ARGS[@]}"
 
 uv run llm-controllability analyze-transfer \
   --states-dir "${STUDY_OUT}" \
@@ -256,8 +257,7 @@ uv run llm-controllability causal-study \
   --prompt-prefix optimized_prompt \
   --activation-prefix activation_addition \
   --target-metric target_projection \
-  --max-pairs "${CAUSAL_MAX_PAIRS}" \
-  --seed 0
+  --max-pairs "${CAUSAL_MAX_PAIRS}"
 
 uv run llm-controllability monitor-invariance \
   --states-dir "${STUDY_OUT}" \
@@ -267,7 +267,7 @@ uv run llm-controllability monitor-invariance \
   --train-fraction 0.60 \
   --validation-fraction 0.20 \
   --reachable-weight 1.0 \
-  --seed 0
+  --seeds "${SEED_ARGS[@]}"
 
 uv run llm-controllability render-study-figures \
   --run-dir "${RUN_ROOT}/${SLUG}" \

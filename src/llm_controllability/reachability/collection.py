@@ -118,24 +118,43 @@ def run_and_capture(
         generation_kwargs["temperature"] = float(generation.get("temperature", 1.0))
         generation_kwargs["top_p"] = float(generation.get("top_p", 1.0))
 
+    selected_layers = tuple(dict.fromkeys(int(layer) for layer in layers))
+    blocks = get_layers(model)
+    if any(layer < 0 or layer >= len(blocks) for layer in selected_layers):
+        raise IndexError("capture layer is outside the model layer range")
+
     with intervention.apply(model):
         with torch.no_grad():
             generated = model.generate(**prompt_tokens, **generation_kwargs)
         generation_diagnostics = intervention.diagnostics()
         generation_control_cost = intervention.control_cost(tokenizer)
-        # Recapture from the controller's declared initial state. Carrying
-        # feedback history from generation into a full-sequence replay would
-        # create a state that occurred in neither execution.
-        intervention.reset()
 
-        captured: dict[int, torch.Tensor] = {}
-        handles = []
-        for layer in layers:
+    # Capture hooks are installed only for the teacher-forced replay. Running them
+    # during autoregressive decoding repeatedly retains activations that are
+    # overwritten and never used.
+    intervention.reset()
+    captured: dict[int, torch.Tensor] = {}
+    result: dict[int, np.ndarray] = {}
+    handles = []
+    with intervention.apply(model):
+        for layer in selected_layers:
 
             def hook(module, inputs, block_output, layer=layer):
-                captured[layer] = _hidden_from_output(block_output)
+                hidden = _hidden_from_output(block_output)
+                if store_token_states:
+                    captured[layer] = hidden.detach()
+                    return
+                if pooling == "last":
+                    pooled = hidden[:, -1]
+                elif pooling == "mean":
+                    pooled = hidden.mean(dim=1)
+                elif pooling == "max":
+                    pooled = hidden.max(dim=1).values
+                else:
+                    raise ValueError(f"unknown pooling method: {pooling}")
+                result[layer] = pooled[0].detach().float().cpu().numpy()
 
-            handles.append(get_layers(model)[layer].register_forward_hook(hook))
+            handles.append(blocks[layer].register_forward_hook(hook))
         try:
             full_mask = torch.ones_like(generated, dtype=torch.long)
             with torch.no_grad():
@@ -146,9 +165,8 @@ def run_and_capture(
 
     continuation_ids = generated[0, prompt_tokens["input_ids"].shape[1] :]
     output = tokenizer.decode(continuation_ids, skip_special_tokens=True)
-    result: dict[int, np.ndarray] = {}
     token_states: dict[int, np.ndarray] = {}
-    for layer in layers:
+    for layer in selected_layers if store_token_states else ():
         hidden = captured[layer]
         if pooling == "last":
             pooled = hidden[:, -1]
@@ -272,19 +290,24 @@ def collect_reachable_states(
     tokenizer, _ = ensure_padding_token(tokenizer)
     samples: list[StateSample] = []
     target_directions = target_directions or {}
+    normalized_target_directions = {}
+    for layer, value in target_directions.items():
+        direction = np.asarray(value, dtype=np.float64).reshape(-1)
+        direction /= max(np.linalg.norm(direction), 1e-12)
+        normalized_target_directions[int(layer)] = direction
+    baseline_intervention = next(
+        (
+            intervention
+            for intervention in interventions
+            if intervention.channel.value == "baseline"
+        ),
+        None,
+    )
+    if baseline_intervention is None:
+        raise ValueError("intervention list must include a baseline")
     for index, example in enumerate(examples):
         example_id = str(example.get("id", index))
         prompt = str(example["prompt"])
-        baseline_intervention = next(
-            (
-                intervention
-                for intervention in interventions
-                if intervention.channel.value == "baseline"
-            ),
-            None,
-        )
-        if baseline_intervention is None:
-            raise ValueError("intervention list must include a baseline")
 
         (
             base_prompt,
@@ -386,11 +409,8 @@ def collect_reachable_states(
                     metrics["quality_score"] = float(record.quality_score)
                 if "monitor_label" in example:
                     metrics["monitor_label"] = float(example["monitor_label"])
-                if layer in target_directions:
-                    direction = np.asarray(
-                        target_directions[layer], dtype=np.float64
-                    ).reshape(-1)
-                    direction /= max(np.linalg.norm(direction), 1e-12)
+                if layer in normalized_target_directions:
+                    direction = normalized_target_directions[layer]
                     metrics["target_projection"] = float(np.dot(state, direction))
                 metrics.update(
                     {

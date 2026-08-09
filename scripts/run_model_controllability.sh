@@ -53,26 +53,46 @@ MODEL_REVISION=${MODEL_REVISION:-}
 DEVICE_MAP=${DEVICE_MAP:-auto}
 MONITOR_DEVICE=${MONITOR_DEVICE:-auto}
 
+DEFAULT_SEEDS="0 1 2 3 4"
+DEFAULT_CONTEXT_COUNT=16
+DEFAULT_EXAMPLE_LIMIT=512
+DEFAULT_CMAP_DIRECTIONS=8
+DEFAULT_CMAP_QUERY_BUDGET=512
+DEFAULT_CMAP_VALIDATION_EXAMPLES=8
+DEFAULT_CMAP_TEST_EXAMPLES=16
+DEFAULT_POPULATION_SIZE=24
+DEFAULT_ITERS=150
+DEFAULT_EXPLORE_PER_POP=16
+DEFAULT_RANDOM_PROMPTS=256
+DEFAULT_PROMPT_TOP_N=8
+DEFAULT_MAX_NEW_TOKENS=128
+DEFAULT_JACOBIAN_EXAMPLE_LIMIT=16
+DEFAULT_CAUSAL_MAX_PAIRS=32
+
 case "${PROTOCOL}" in
+  pilot)
+    METHODS=${METHODS:-"gcg random minscan"}
+    DEFAULT_SEEDS="0"
+    DEFAULT_CONTEXT_COUNT=4
+    DEFAULT_EXAMPLE_LIMIT=128
+    DEFAULT_CMAP_DIRECTIONS=2
+    DEFAULT_CMAP_QUERY_BUDGET=64
+    DEFAULT_CMAP_VALIDATION_EXAMPLES=2
+    DEFAULT_CMAP_TEST_EXAMPLES=4
+    DEFAULT_POPULATION_SIZE=8
+    DEFAULT_ITERS=50
+    DEFAULT_EXPLORE_PER_POP=8
+    DEFAULT_RANDOM_PROMPTS=128
+    DEFAULT_PROMPT_TOP_N=2
+    DEFAULT_MAX_NEW_TOKENS=64
+    DEFAULT_JACOBIAN_EXAMPLE_LIMIT=4
+    DEFAULT_CAUSAL_MAX_PAIRS=8
+    ;;
   full)
     METHODS=${METHODS:-"epo gcg random random_search minscan"}
-    DEFAULT_SEEDS="0 1 2 3 4"
-    DEFAULT_CONTEXT_COUNT=16
-    DEFAULT_EXAMPLE_LIMIT=512
-    DEFAULT_CMAP_DIRECTIONS=8
-    DEFAULT_CMAP_QUERY_BUDGET=512
-    DEFAULT_CMAP_VALIDATION_EXAMPLES=8
-    DEFAULT_CMAP_TEST_EXAMPLES=16
     ;;
   matched)
     METHODS=${METHODS:-"epo gcg"}
-    DEFAULT_SEEDS="0 1 2 3 4"
-    DEFAULT_CONTEXT_COUNT=16
-    DEFAULT_EXAMPLE_LIMIT=512
-    DEFAULT_CMAP_DIRECTIONS=8
-    DEFAULT_CMAP_QUERY_BUDGET=512
-    DEFAULT_CMAP_VALIDATION_EXAMPLES=8
-    DEFAULT_CMAP_TEST_EXAMPLES=16
     ;;
   scaling)
     METHODS=${METHODS:-"epo gcg"}
@@ -85,7 +105,7 @@ case "${PROTOCOL}" in
     DEFAULT_CMAP_TEST_EXAMPLES=8
     ;;
   *)
-    echo "PROTOCOL must be 'full', 'matched', or 'scaling'" >&2
+    echo "PROTOCOL must be 'pilot', 'full', 'matched', or 'scaling'" >&2
     exit 2
     ;;
 esac
@@ -97,6 +117,16 @@ CMAP_DIRECTIONS=${CMAP_DIRECTIONS:-${DEFAULT_CMAP_DIRECTIONS}}
 CMAP_QUERY_BUDGET=${CMAP_QUERY_BUDGET:-${DEFAULT_CMAP_QUERY_BUDGET}}
 CMAP_VALIDATION_EXAMPLES=${CMAP_VALIDATION_EXAMPLES:-${DEFAULT_CMAP_VALIDATION_EXAMPLES}}
 CMAP_TEST_EXAMPLES=${CMAP_TEST_EXAMPLES:-${DEFAULT_CMAP_TEST_EXAMPLES}}
+POPULATION_SIZE=${POPULATION_SIZE:-${DEFAULT_POPULATION_SIZE}}
+ITERS=${ITERS:-${DEFAULT_ITERS}}
+EXPLORE_PER_POP=${EXPLORE_PER_POP:-${DEFAULT_EXPLORE_PER_POP}}
+RANDOM_PROMPTS=${RANDOM_PROMPTS:-${DEFAULT_RANDOM_PROMPTS}}
+PROMPT_TOP_N=${PROMPT_TOP_N:-${DEFAULT_PROMPT_TOP_N}}
+MAX_NEW_TOKENS=${MAX_NEW_TOKENS:-${DEFAULT_MAX_NEW_TOKENS}}
+JACOBIAN_EXAMPLE_LIMIT=${JACOBIAN_EXAMPLE_LIMIT:-${DEFAULT_JACOBIAN_EXAMPLE_LIMIT}}
+CAUSAL_MAX_PAIRS=${CAUSAL_MAX_PAIRS:-${DEFAULT_CAUSAL_MAX_PAIRS}}
+SEQ_LEN=${SEQ_LEN:-32}
+TOPK=${TOPK:-256}
 
 read -r -a METHOD_ARGS <<< "${METHODS}"
 read -r -a SEED_ARGS <<< "${SEEDS}"
@@ -148,18 +178,19 @@ uv run llm-controllability run \
   --seeds "${SEED_ARGS[@]}" \
   --device-map "${DEVICE_MAP}" \
   --torch-dtype "${DTYPE}" \
-  --seq-len 32 \
-  --population-size 24 \
-  --iters 150 \
-  --explore-per-pop 16 \
+  --seq-len "${SEQ_LEN}" \
+  --population-size "${POPULATION_SIZE}" \
+  --iters "${ITERS}" \
+  --explore-per-pop "${EXPLORE_PER_POP}" \
   --batch-size "${BATCH_SIZE}" \
-  --topk 256
+  --topk "${TOPK}" \
+  --random-prompts "${RANDOM_PROMPTS}"
 
 uv run llm-controllability export-prompt-controls \
   --records "${PROMPT_RUN}/candidates.csv" \
   --direction-sweep "${SWEEP_CSV}" \
   --methods epo gcg \
-  --top-n 8 \
+  --top-n "${PROMPT_TOP_N}" \
   --bidirectional \
   --out "${PROMPT_CONTROLS}"
 
@@ -176,6 +207,7 @@ uv run llm-controllability build-study-spec \
   --layers sweep \
   --prompt-controls "${PROMPT_CONTROLS}" \
   --natural-controls "${DATA_ROOT}/controls/prompt_rewrites.json" \
+  --max-new-tokens "${MAX_NEW_TOKENS}" \
   --semantic-model sentence-transformers/all-mpnet-base-v2 \
   --minimum-semantic-similarity 0.80 \
   --maximum-quality-drop 0.75 \
@@ -199,7 +231,7 @@ uv run llm-controllability analyze-control \
 uv run llm-controllability analyze-jacobians \
   --spec "${STUDY_SPEC}" \
   --out "${RUN_ROOT}/${SLUG}/jacobians.csv" \
-  --example-limit 16 \
+  --example-limit "${JACOBIAN_EXAMPLE_LIMIT}" \
   --epsilon 0.25 \
   --basis-dimensions 8 16 32 \
   --seed 0
@@ -224,7 +256,7 @@ uv run llm-controllability causal-study \
   --prompt-prefix optimized_prompt \
   --activation-prefix activation_addition \
   --target-metric target_projection \
-  --max-pairs 32 \
+  --max-pairs "${CAUSAL_MAX_PAIRS}" \
   --seed 0
 
 uv run llm-controllability monitor-invariance \
